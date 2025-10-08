@@ -1,26 +1,65 @@
-# IMDSv1 Security Lab - Branch: network-segmentation (ENTERPRISE)
+# IMDSv1 Security Lab - fck-nat Cost Optimization
 
-## 💰 AWS Cost Estimate (us-east-1)
+## 💰 AWS Cost Estimate (us-east-1) - Updated with fck-nat
 
-**Monthly Cost: $41.02** *(17% savings vs. branch-1)*
+| Branch | Monthly Cost | Key Changes | Savings |
+|--------|-------------|-------------|---------|
+| **Branch 1-2 (fck-nat)** | **$21.38** | **NAT Gateway → fck-nat (t3.nano)** | **~$28/month** |
+| Branch 3-4 (original) | $16.78 | Basic lab setup | Baseline |
+| Branch 5 (enterprise) | $41.02 | + RDS + Backend API + Secrets Manager | Full featured |
 
+### fck-nat Cost Breakdown (Branches 1-2)
 | Resource | Monthly Cost | Notes |
 |----------|-------------|-------|
-| EC2 Instances (3x t3.micro) | $22.77 | Bastion + Web + Backend API |
-| RDS PostgreSQL (db.t3.micro) | $15.44 | Multi-AZ database |
-| EBS Storage (24 GB) | $2.40 | Root volumes |
-| Secrets Manager | $0.40 | Database credentials |
+| **fck-nat (t3.nano)** | **$4.60** | **$3.80 instance + $0.80 storage** |
+| EC2 Instances (2x t3.micro) | $16.78 | Bastion + Web Server |
 | CloudTrail, CloudWatch, DynamoDB | Variable | Usage-based pricing |
-| ✅ **Enterprise Features** | **+$24.24** | **Database tier + API backend** |
+| **vs. NAT Gateway** | **~$32.85** | **$32.40 hourly + data processing** |
 
-*Generated with Infracost on $(date '+%Y-%m-%d')*
+### **Cost Optimization Benefits**
+- ✅ **90% NAT cost reduction**: $32.85 → $4.60/month  
+- ✅ **Same functionality**: Full NAT capabilities with fck-nat AMI
+- ✅ **Better security**: Instance-level controls vs managed service
+- ✅ **Flexible configuration**: Custom rules and monitoring possible
+
+*Generated with Infracost on 2025-10-08*
 
 ---
 
 ## Overview
-This branch demonstrates the **MOST SECURE** configuration with multiple layers of defense against IMDS credential theft and abuse.
+This lab has been **rearchitected** to use **fck-nat** instead of AWS Managed NAT Gateway for significant cost savings while maintaining security and functionality.
 
-✅ **FULLY PROTECTED**: Multiple security controls prevent credential theft and misuse.
+## fck-nat Implementation (Branches 1-2)
+
+### What is fck-nat?
+- **Feasible Cost Konfigurable NAT**: Open-source NAT instance AMI
+- **Built on Amazon Linux 2023**: Always up-to-date with latest security patches  
+- **ARM64 & x86_64 support**: Cost-effective on t4g.nano or t3.nano instances
+- **5Gbps burst capability**: Handles up to 5Gbps NAT traffic
+- **90% cost reduction**: vs AWS Managed NAT Gateway
+
+### Architecture Changes
+```diff
+- AWS Managed NAT Gateway ($32.85/month)
++ fck-nat instance (t3.nano, $4.60/month)
+
+Network Flow:
+Internet → IGW → Public Subnet (fck-nat)
+                      ↓
+Private Subnet (Web Server) → fck-nat → Internet
+
+Security:
++ IMDSv2 enforced on fck-nat instance
++ Source/destination checks disabled
++ Dedicated security group for NAT traffic
++ Route table configured for private subnet
+```
+
+### Security Benefits
+- ✅ **Instance-level security controls**: Custom security groups and NACLs
+- ✅ **IMDSv2 enforced**: fck-nat instance protected against metadata attacks
+- ✅ **Monitoring capability**: CloudWatch logs and custom monitoring possible
+- ✅ **Update control**: Manual control over AMI updates and patches
 
 ## Current Security Posture (FULLY SECURE)
 - ✅ **IMDSv2 enforced** (requires session token, prevents simple SSRF)
@@ -44,49 +83,124 @@ Security Improvements:
 + Input validation and sanitization
 ```
 
-## Lab Architecture
+## Lab Architecture (fck-nat Implementation)
 ```
 Internet 
     |
-    ├── Bastion Host (Public Subnet)
-    │   ├── ❌ Cannot steal credentials (IMDSv2 + SSRF protection)
-    │   └── ❌ Cannot use stolen credentials (VPC Endpoint required)
+    ├── Public Subnet (10.0.1.0/24)
+    │   ├── Bastion Host (t3.micro)
+    │   │   ├── ✅ IMDSv2 enforced 
+    │   │   └── ✅ Attack scripts for testing
+    │   │
+    │   └── fck-nat Instance (t3.nano)
+    │       ├── ✅ NAT functionality for private subnet
+    │       ├── ✅ IMDSv2 enforced
+    │       ├── ✅ source_dest_check = false
+    │       └── ✅ $4.60/month vs $32.85 NAT Gateway
     |
-    └── Web Server (Public Subnet) 
-        ├── ✅ SSRF Protection (blocks metadata IPs)
-        ├── ✅ IMDSv2 Only (token required)
-        ├── ✅ VPC Endpoint Access Only
-        └── ✅ Encrypted DynamoDB via VPC Endpoint
+    └── Private Subnet (10.0.2.0/24)
+        └── Web Server (t3.micro)
+            ├── ⚠️ IMDSv1 enabled (vulnerable - branches 1-2)
+            ├── ✅ Internet access via fck-nat
+            ├── ✅ VPC Endpoint for DynamoDB
+            └── ✅ Encrypted DynamoDB storage
+
+Route Tables:
+- Public: 0.0.0.0/0 → Internet Gateway
+- Private: 0.0.0.0/0 → fck-nat ENI
 
 VPC Endpoint (Gateway)
     └── DynamoDB (AWS Service)
 ```
 
-## Security Test Scenarios
+## Security Test Scenarios (fck-nat Implementation)
 
 ### Prerequisites
-Deploy the infrastructure:
+Deploy the infrastructure to any branch with fck-nat:
 ```bash
+# Switch to branch with fck-nat implementation
+git checkout branch-1-vulnerable  # or branch-2-vpc-conditional
+
 cd terraform
 terraform init
 terraform apply
+
+# Note the outputs:
+# bastion_public_ip = "x.x.x.x" 
+# fck_nat_public_ip = "x.x.x.x"
+# web_server_private_ip = "10.0.2.x"  # Note: NO public IP (private subnet)
 ```
 
-### Test 1: SSRF Protection
+### Test 1: IMDS Vulnerability Attack (branch-1-vulnerable)
 ```bash
 # Connect to bastion
 ssh -i imdsv1-lab.pem ec2-user@<BASTION_PUBLIC_IP>
 
-# Run security test
-./test-security.sh http://<WEB_SERVER_PRIVATE_IP>:8080
+# Run the pre-configured attack script
+./run-attack.sh http://<WEB_SERVER_PRIVATE_IP>:8080
 
-# Results:
-# ✗ Metadata endpoint blocked (403 Forbidden)
-# ✗ Localhost access blocked (403 Forbidden)  
-# ✗ Private network access blocked (403 Forbidden)
-# ✓ External URLs allowed (200 OK)
-# ✓ API endpoints work normally
+# Expected results:
+# ✓ Credentials stolen via SSRF → IMDS
+# ✓ DynamoDB access using stolen credentials
+# ✓ Full compromise demonstration
 ```
+
+### Test 2: Network Connectivity via fck-nat
+```bash
+# Verify web server can reach internet through fck-nat
+ssh -i imdsv1-lab.pem ec2-user@<BASTION_PUBLIC_IP>
+ssh <WEB_SERVER_PRIVATE_IP>  # Jump to private instance
+
+# Test internet connectivity
+curl -I https://httpbin.org/ip  # Should work via fck-nat
+curl -s https://httpbin.org/ip | jq .origin  # Shows fck-nat public IP
+```
+
+### Test 3: fck-nat Monitoring and Management  
+```bash
+# SSH to fck-nat instance for troubleshooting
+ssh -i imdsv1-lab.pem ec2-user@<FCK_NAT_PUBLIC_IP>
+
+# Check fck-nat service status
+sudo systemctl status fck-nat
+
+# View NAT traffic logs (if configured)
+sudo journalctl -u fck-nat -f
+
+# Monitor network traffic
+sudo netstat -tuln
+```
+
+## Branch Comparison & Migration Guide
+
+### Current Branch Status
+| Branch | fck-nat Status | Monthly Cost | Security Level |
+|--------|----------------|-------------|----------------|
+| **branch-1-vulnerable** | ✅ **Implemented** | **$21.38** | VULNERABLE (IMDSv1) |
+| **branch-2-vpc-conditional** | ✅ **Implemented** | **$21.38** | MODERATE (conditional) |
+| branch-3-vpc-endpoint | ❌ Original | $16.78 | SECURE (VPC endpoint) |
+| branch-4-file-upload | ❌ Original | $16.78 | SECURE (file upload) |
+| branch-5-network-segmentation | ❌ Original | $41.02 | ENTERPRISE (full stack) |
+
+### Migration Benefits  
+- **Immediate 90% NAT cost reduction** on branches 1-2
+- **Same security model** with enhanced instance-level controls
+- **Better monitoring capabilities** via CloudWatch and system logs
+- **Simplified architecture** without managed service dependencies
+- **Educational value** for understanding NAT at instance level
+
+### When to Use Each Branch
+- **branch-1**: Learn IMDS attacks with cost-optimized NAT
+- **branch-2**: Conditional access patterns with fck-nat
+- **branch-3**: VPC endpoint security (original architecture)
+- **branch-4**: File upload vulnerabilities (original architecture)  
+- **branch-5**: Full enterprise stack with RDS and API backend
+
+### Next Steps
+1. Apply fck-nat to remaining branches (3-5) for maximum cost savings
+2. Implement custom monitoring for fck-nat instances
+3. Consider ARM-based t4g.nano instances for additional savings
+4. Set up automated AMI updates for fck-nat instances
 
 ### Test 2: IMDSv2 Protection
 Even if SSRF protection failed, IMDSv2 prevents credential theft:
