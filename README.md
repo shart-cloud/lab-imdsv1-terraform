@@ -106,6 +106,42 @@ Check out the other branches to see progressive security improvements:
 - `branch-2-vpc-conditional`: Adds VPC endpoint conditions to IAM policies
 - `branch-3-vpc-endpoint`: Implements VPC endpoints with restricted access
 
+## Security Monitoring
+
+### CloudWatch Logs
+Monitor real-time attack attempts:
+```bash
+# View SSRF attempts
+aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --filter-pattern "CRITICAL"
+
+# View access logs
+aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --stream-name-prefix access
+```
+
+### CloudTrail Audit
+Complete audit trail of all API calls:
+```bash
+# View IAM role assumptions (credential theft)
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRole \
+  --region us-east-1
+
+# View DynamoDB access with stolen credentials
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=Products \
+  --region us-east-1
+
+# Export all CloudTrail logs for analysis
+aws s3 sync s3://imdsv1-lab-cloudtrail-<ACCOUNT_ID> ./cloudtrail-logs/
+```
+
+### What Gets Logged
+- **CloudWatch**: Application logs, access logs, SSRF attempts
+- **CloudTrail**: All AWS API calls including:
+  - IAM role assumptions (shows credential usage)
+  - DynamoDB operations (shows data access)
+  - STS token operations (shows credential theft)
+
 ## Cleanup
 ```bash
 terraform destroy
