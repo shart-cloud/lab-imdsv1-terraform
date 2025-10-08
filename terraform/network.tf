@@ -24,19 +24,7 @@ resource "aws_subnet" "database_b" {
   }
 }
 
-# Route table for private subnet (no internet access)
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "imdsv1-lab-private-rt"
-  }
-}
-
-resource "aws_route_table_association" "private" {
-  subnet_id      = aws_subnet.private.id
-  route_table_id = aws_route_table.private.id
-}
+# Private route table is now defined in main.tf with fck-nat routing
 
 # Route table for database subnets (most restrictive)
 resource "aws_route_table" "database" {
@@ -57,30 +45,7 @@ resource "aws_route_table_association" "database_b" {
   route_table_id = aws_route_table.database.id
 }
 
-# NAT Gateway for private subnet (if needed for updates)
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  
-  tags = {
-    Name = "imdsv1-lab-nat-eip"
-  }
-}
-
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public.id
-
-  tags = {
-    Name = "imdsv1-lab-nat-gateway"
-  }
-}
-
-# Add NAT route to private route table
-resource "aws_route" "private_nat" {
-  route_table_id         = aws_route_table.private.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main.id
-}
+# NAT Gateway replaced with fck-nat instance (see main.tf)
 
 # Network ACLs for additional security
 resource "aws_network_acl" "public" {

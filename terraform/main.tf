@@ -15,6 +15,22 @@ provider "aws" {
 # Data sources
 data "aws_caller_identity" "current" {}
 
+# fck-nat AMI
+data "aws_ami" "fck_nat" {
+  most_recent = true
+  owners      = ["568608671756"]
+
+  filter {
+    name   = "name"
+    values = ["fck-nat-al2023-*-x86_64-*"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+}
+
 # VPC Configuration
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -69,8 +85,29 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
+  subnet_id             = aws_subnet.private.id
   route_table_id = aws_route_table.public.id
+}
+
+# Private route table for private subnet
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = aws_instance.fck_nat.primary_network_interface_id
+  }
+
+  tags = {
+    Name = "imdsv1-lab-private-rt"
+  }
+
+  depends_on = [aws_instance.fck_nat]
+}
+
+resource "aws_route_table_association" "private" {
+  subnet_id      = aws_subnet.private.id
+  route_table_id = aws_route_table.private.id
 }
 
 # Security Groups
@@ -112,7 +149,7 @@ resource "aws_security_group" "web_server" {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   egress {
@@ -124,6 +161,43 @@ resource "aws_security_group" "web_server" {
 
   tags = {
     Name = "imdsv1-lab-web-server-sg"
+  }
+}
+
+resource "aws_security_group" "fck_nat" {
+  name_prefix = "fck-nat-sg-"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+
+  ingress {
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "imdsv1-lab-fck-nat-sg"
   }
 }
 
@@ -819,6 +893,36 @@ GOMOD
   }
 }
 
+# fck-nat instance
+resource "aws_instance" "fck_nat" {
+  ami                    = data.aws_ami.fck_nat.id
+  instance_type          = "t3.nano"
+  key_name              = var.key_name
+  subnet_id             = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.fck_nat.id]
+  source_dest_check     = false
+
+  # SECURE: IMDSv2 enforced
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+    instance_metadata_tags      = "disabled"
+  }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    # fck-nat is pre-installed in the AMI, just ensure it's running
+    systemctl enable fck-nat
+    systemctl start fck-nat
+  EOF
+
+  tags = {
+    Name = "imdsv1-lab-fck-nat"
+  }
+}
+
 # Data sources
 data "aws_availability_zones" "available" {
   state = "available"
@@ -840,11 +944,19 @@ output "bastion_public_ip" {
 }
 
 output "web_server_public_ip" {
-  value = aws_instance.web_server.public_ip
+  value = "N/A - Web server is in private subnet"
 }
 
 output "web_server_private_ip" {
   value = aws_instance.web_server.private_ip
+}
+
+output "fck_nat_public_ip" {
+  value = aws_instance.fck_nat.public_ip
+}
+
+output "fck_nat_private_ip" {
+  value = aws_instance.fck_nat.private_ip
 }
 
 output "cloudwatch_logs" {
