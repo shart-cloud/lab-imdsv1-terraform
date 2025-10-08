@@ -1,5 +1,20 @@
 # IMDSv1 Security Lab - Branch: vpc-conditional
 
+## 💰 AWS Cost Estimate (us-east-1)
+
+**Monthly Cost: $16.78** *(66% savings vs. branch-1)*
+
+| Resource | Monthly Cost | Notes |
+|----------|-------------|-------|
+| EC2 Instances (2x t3.micro) | $15.18 | Bastion + Web Server |
+| EBS Storage (16 GB) | $1.60 | Root volumes |
+| CloudTrail, CloudWatch, DynamoDB | Variable | Usage-based pricing |
+| ✅ **Cost Optimization** | **-$32.85** | **NAT Gateway removed** |
+
+*Generated with Infracost on $(date '+%Y-%m-%d')*
+
+---
+
 ## Overview
 This branch demonstrates **PARTIAL MITIGATION** using VPC conditions in IAM policies. While credentials can still be stolen via SSRF, they can only be used from within the VPC.
 
