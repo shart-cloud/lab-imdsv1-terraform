@@ -227,11 +227,20 @@ resource "aws_instance" "backend_api" {
     instance_metadata_tags      = "disabled"
   }
 
-  user_data = base64encode(templatefile("${path.module}/user_data/backend_api.sh", {
-    db_secret_arn = aws_secretsmanager_secret.db_credentials.arn
-    region        = var.region
-    db_password   = var.db_password
-  }))
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y golang git
+    
+    # Set environment variables
+    echo "DB_SECRET_ARN=${aws_secretsmanager_secret.db_credentials.arn}" >> /etc/environment
+    echo "AWS_REGION=${var.region}" >> /etc/environment
+    
+    # Install Go application
+    mkdir -p /opt/backend-api
+    cd /opt/backend-api
+    EOF
+  )
 
   tags = {
     Name = "imdsv1-lab-backend-api"
