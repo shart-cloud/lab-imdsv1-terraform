@@ -124,6 +124,77 @@ resource "aws_security_group" "web_server" {
   }
 }
 
+# CloudWatch Log Groups
+resource "aws_cloudwatch_log_group" "bastion" {
+  name              = "/aws/ec2/imdsv1-lab/bastion"
+  retention_in_days = 7
+
+  tags = {
+    Name = "imdsv1-lab-bastion-logs"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "web_server" {
+  name              = "/aws/ec2/imdsv1-lab/web-server"
+  retention_in_days = 7
+
+  tags = {
+    Name = "imdsv1-lab-web-server-logs"
+  }
+}
+
+# IAM Role for Bastion
+resource "aws_iam_role" "bastion" {
+  name = "imdsv1-lab-bastion-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "imdsv1-lab-bastion-role"
+  }
+}
+
+# CloudWatch Logs policy for Bastion
+resource "aws_iam_role_policy" "bastion_cloudwatch" {
+  name = "bastion-cloudwatch-policy"
+  role = aws_iam_role.bastion.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = [
+          aws_cloudwatch_log_group.bastion.arn,
+          "${aws_cloudwatch_log_group.bastion.arn}:*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "bastion" {
+  name = "imdsv1-lab-bastion-profile"
+  role = aws_iam_role.bastion.name
+}
+
 # IAM Role for Web Server (VULNERABLE - Too Permissive)
 resource "aws_iam_role" "web_server" {
   name = "imdsv1-lab-web-server-role"
@@ -166,6 +237,31 @@ resource "aws_iam_role_policy" "web_server_dynamodb" {
           "dynamodb:DescribeTable"
         ]
         Resource = "*"
+      }
+    ]
+  })
+}
+
+# CloudWatch Logs policy for Web Server
+resource "aws_iam_role_policy" "web_server_cloudwatch" {
+  name = "web-server-cloudwatch-policy"
+  role = aws_iam_role.web_server.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = [
+          aws_cloudwatch_log_group.web_server.arn,
+          "${aws_cloudwatch_log_group.web_server.arn}:*"
+        ]
       }
     ]
   })
@@ -236,6 +332,7 @@ resource "aws_instance" "bastion" {
   key_name              = var.key_name
   subnet_id             = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.bastion.id]
+  iam_instance_profile   = aws_iam_instance_profile.bastion.name
 
   # VULNERABLE: IMDSv1 is enabled (default)
   metadata_options {
@@ -247,12 +344,50 @@ resource "aws_instance" "bastion" {
   user_data = <<-EOF
     #!/bin/bash
     yum update -y
-    yum install -y git curl wget
+    yum install -y git curl wget amazon-cloudwatch-agent
     
     # Install AWS CLI v2
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
     unzip awscliv2.zip
     ./aws/install
+    
+    # Configure CloudWatch agent
+    cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWCONFIG'
+    {
+      "logs": {
+        "logs_collected": {
+          "files": {
+            "collect_list": [
+              {
+                "file_path": "/var/log/messages",
+                "log_group_name": "/aws/ec2/imdsv1-lab/bastion",
+                "log_stream_name": "{instance_id}/system",
+                "timezone": "UTC"
+              },
+              {
+                "file_path": "/var/log/secure",
+                "log_group_name": "/aws/ec2/imdsv1-lab/bastion",
+                "log_stream_name": "{instance_id}/secure",
+                "timezone": "UTC"
+              },
+              {
+                "file_path": "/home/ec2-user/*.log",
+                "log_group_name": "/aws/ec2/imdsv1-lab/bastion",
+                "log_stream_name": "{instance_id}/attack-logs",
+                "timezone": "UTC"
+              }
+            ]
+          }
+        }
+      }
+    }
+    CWCONFIG
+    
+    # Start CloudWatch agent
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+      -a fetch-config \
+      -m ec2 \
+      -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
     
     # Create attack script
     cat > /home/ec2-user/steal-creds.sh <<'SCRIPT'
@@ -299,12 +434,38 @@ resource "aws_instance" "bastion" {
     
     echo ""
     echo "Success! We've stolen the credentials and accessed the database!"
+    
+    # Log the attack for CloudWatch
+    echo "[$(date)] Attack completed - Credentials stolen and database accessed" >> /home/ec2-user/attack.log
     SCRIPT
     
     chmod +x /home/ec2-user/steal-creds.sh
     
+    # Create wrapper script that logs attacks
+    cat > /home/ec2-user/run-attack.sh <<'WRAPPER'
+    #!/bin/bash
+    echo "[$(date)] Starting credential theft attack from $(whoami)" >> /home/ec2-user/attack.log
+    ./steal-creds.sh "$@" 2>&1 | tee -a /home/ec2-user/attack.log
+    echo "[$(date)] Attack script completed" >> /home/ec2-user/attack.log
+    WRAPPER
+    
+    chmod +x /home/ec2-user/run-attack.sh
+    
     # Install jq for JSON parsing
     yum install -y jq
+    
+    # Create log rotation
+    cat > /etc/logrotate.d/attack-logs <<'LOGROTATE'
+    /home/ec2-user/*.log {
+        daily
+        rotate 7
+        compress
+        delaycompress
+        missingok
+        notifempty
+        create 0644 ec2-user ec2-user
+    }
+    LOGROTATE
   EOF
 
   tags = {
@@ -330,7 +491,51 @@ resource "aws_instance" "web_server" {
   user_data = <<-EOF
     #!/bin/bash
     yum update -y
-    yum install -y golang git
+    yum install -y golang git amazon-cloudwatch-agent
+    
+    # Configure CloudWatch agent for web server
+    cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWCONFIG'
+    {
+      "logs": {
+        "logs_collected": {
+          "files": {
+            "collect_list": [
+              {
+                "file_path": "/var/log/messages",
+                "log_group_name": "/aws/ec2/imdsv1-lab/web-server",
+                "log_stream_name": "{instance_id}/system",
+                "timezone": "UTC"
+              },
+              {
+                "file_path": "/var/log/web-server.log",
+                "log_group_name": "/aws/ec2/imdsv1-lab/web-server",
+                "log_stream_name": "{instance_id}/application",
+                "timezone": "UTC"
+              },
+              {
+                "file_path": "/var/log/web-server-access.log",
+                "log_group_name": "/aws/ec2/imdsv1-lab/web-server",
+                "log_stream_name": "{instance_id}/access",
+                "timezone": "UTC"
+              },
+              {
+                "file_path": "/var/log/web-server-ssrf.log",
+                "log_group_name": "/aws/ec2/imdsv1-lab/web-server",
+                "log_stream_name": "{instance_id}/ssrf-attempts",
+                "timezone": "UTC"
+              }
+            ]
+          }
+        }
+      }
+    }
+    CWCONFIG
+    
+    # Start CloudWatch agent
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+      -a fetch-config \
+      -m ec2 \
+      -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
     
     # Set up Go environment
     export GOPATH=/home/ec2-user/go
@@ -353,6 +558,10 @@ GOMOD
     # Download dependencies
     go mod download
     
+    # Create log files with proper permissions
+    touch /var/log/web-server.log /var/log/web-server-access.log /var/log/web-server-ssrf.log
+    chown ec2-user:ec2-user /var/log/web-server*.log
+    
     # Create systemd service
     cat > /etc/systemd/system/web-server.service <<'SERVICE'
     [Unit]
@@ -367,6 +576,8 @@ GOMOD
     Restart=always
     Environment="AWS_REGION=us-east-1"
     Environment="PORT=8080"
+    StandardOutput=append:/var/log/web-server.log
+    StandardError=append:/var/log/web-server.log
     
     [Install]
     WantedBy=multi-user.target
@@ -414,6 +625,17 @@ output "web_server_private_ip" {
   value = aws_instance.web_server.private_ip
 }
 
+output "cloudwatch_logs" {
+  value = {
+    bastion_logs   = "https://console.aws.amazon.com/cloudwatch/home?region=${var.region}#logsV2:log-groups/log-group/${aws_cloudwatch_log_group.bastion.name}"
+    web_server_logs = "https://console.aws.amazon.com/cloudwatch/home?region=${var.region}#logsV2:log-groups/log-group/${aws_cloudwatch_log_group.web_server.name}"
+  }
+}
+
 output "attack_command" {
-  value = "ssh -i ${var.key_name}.pem ec2-user@${aws_instance.bastion.public_ip} './steal-creds.sh http://${aws_instance.web_server.private_ip}:8080'"
+  value = "ssh -i ${var.key_name}.pem ec2-user@${aws_instance.bastion.public_ip} './run-attack.sh http://${aws_instance.web_server.private_ip}:8080'"
+}
+
+output "view_logs_command" {
+  value = "aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --filter-pattern CRITICAL"
 }
