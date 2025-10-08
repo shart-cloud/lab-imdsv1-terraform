@@ -29,6 +29,9 @@ type Product struct {
 var (
 	dynamoClient *dynamodb.DynamoDB
 	tableName    = "Products"
+	accessLog    *log.Logger
+	ssrfLog      *log.Logger
+	appLog       *log.Logger
 	// Blocked IP ranges for SSRF protection
 	blockedCIDRs = []string{
 		"169.254.0.0/16", // AWS metadata service
@@ -43,6 +46,31 @@ var (
 )
 
 func init() {
+	// Set up different loggers for different purposes
+	accessFile, err := os.OpenFile("/var/log/web-server-access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Printf("Failed to open access log file: %v", err)
+		accessLog = log.New(os.Stdout, "ACCESS: ", log.LstdFlags)
+	} else {
+		accessLog = log.New(accessFile, "", log.LstdFlags)
+	}
+
+	ssrfFile, err := os.OpenFile("/var/log/web-server-ssrf.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Printf("Failed to open SSRF log file: %v", err)
+		ssrfLog = log.New(os.Stdout, "SSRF: ", log.LstdFlags)
+	} else {
+		ssrfLog = log.New(ssrfFile, "", log.LstdFlags)
+	}
+
+	appFile, err := os.OpenFile("/var/log/web-server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Printf("Failed to open app log file: %v", err)
+		appLog = log.New(os.Stdout, "APP: ", log.LstdFlags)
+	} else {
+		appLog = log.New(appFile, "", log.LstdFlags)
+	}
+
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 		Config: aws.Config{
@@ -50,6 +78,8 @@ func init() {
 		},
 	}))
 	dynamoClient = dynamodb.New(sess)
+
+	appLog.Println("Secure web server initialized with SSRF protection")
 }
 
 // isBlockedIP checks if an IP is in blocked ranges
@@ -79,15 +109,22 @@ func fetchURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := r.RemoteAddr
+	userAgent := r.UserAgent()
+
 	// Parse and validate URL
 	parsedURL, err := url.Parse(targetURL)
 	if err != nil {
+		ssrfLog.Printf("INVALID URL: ClientIP=%s UserAgent=%s TargetURL=%s Error=%v",
+			clientIP, userAgent, targetURL, err)
 		http.Error(w, "Invalid URL format", http.StatusBadRequest)
 		return
 	}
 
 	// Only allow HTTP/HTTPS
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		ssrfLog.Printf("BLOCKED SCHEME: ClientIP=%s UserAgent=%s TargetURL=%s Scheme=%s",
+			clientIP, userAgent, targetURL, parsedURL.Scheme)
 		http.Error(w, "Only HTTP/HTTPS URLs are allowed", http.StatusBadRequest)
 		return
 	}
@@ -96,6 +133,8 @@ func fetchURL(w http.ResponseWriter, r *http.Request) {
 	host := parsedURL.Hostname()
 	ips, err := net.LookupIP(host)
 	if err != nil {
+		ssrfLog.Printf("DNS FAILURE: ClientIP=%s UserAgent=%s TargetURL=%s Error=%v",
+			clientIP, userAgent, targetURL, err)
 		http.Error(w, "Failed to resolve hostname", http.StatusBadRequest)
 		return
 	}
@@ -103,13 +142,17 @@ func fetchURL(w http.ResponseWriter, r *http.Request) {
 	// Check all resolved IPs
 	for _, ip := range ips {
 		if isBlockedIP(ip.String()) {
-			log.Printf("Blocked SSRF attempt to %s (resolved to %s)", targetURL, ip.String())
+			ssrfLog.Printf("CRITICAL: BLOCKED SSRF ATTEMPT! ClientIP=%s UserAgent=%s TargetURL=%s ResolvedIP=%s",
+				clientIP, userAgent, targetURL, ip.String())
+			appLog.Printf("SECURITY: Blocked SSRF to %s from %s", targetURL, clientIP)
 			http.Error(w, "Access to internal/metadata endpoints is not allowed", http.StatusForbidden)
 			return
 		}
 	}
 
-	log.Printf("Fetching allowed URL: %s", targetURL)
+	ssrfLog.Printf("ALLOWED: ClientIP=%s UserAgent=%s TargetURL=%s",
+		clientIP, userAgent, targetURL)
+	appLog.Printf("Fetching allowed URL: %s from client %s", targetURL, clientIP)
 
 	// Use custom transport with additional security
 	client := &http.Client{
@@ -168,7 +211,7 @@ func getProduct(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	productID := vars["id"]
 
-	log.Printf("Getting product: %s", productID)
+	appLog.Printf("Getting product: %s", productID)
 
 	result, err := dynamoClient.GetItem(&dynamodb.GetItemInput{
 		TableName: aws.String(tableName),
@@ -180,7 +223,7 @@ func getProduct(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		log.Printf("DynamoDB error: %v", err)
+		appLog.Printf("DynamoDB error getting product %s: %v", productID, err)
 		http.Error(w, "Error getting product", http.StatusInternalServerError)
 		return
 	}
@@ -202,14 +245,14 @@ func getProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func listProducts(w http.ResponseWriter, r *http.Request) {
-	log.Println("Listing all products")
+	appLog.Println("Listing all products")
 
 	result, err := dynamoClient.Scan(&dynamodb.ScanInput{
 		TableName: aws.String(tableName),
 	})
 
 	if err != nil {
-		log.Printf("DynamoDB error: %v", err)
+		appLog.Printf("DynamoDB error scanning products: %v", err)
 		http.Error(w, "Error scanning products", http.StatusInternalServerError)
 		return
 	}
@@ -242,6 +285,23 @@ func main() {
 	router.HandleFunc("/api/products", listProducts).Methods("GET")
 	router.HandleFunc("/api/products/{id}", getProduct).Methods("GET")
 
+	// Logging middleware
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+
+			// Log the request
+			accessLog.Printf("Method=%s Path=%s RemoteAddr=%s UserAgent=%s",
+				r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent())
+
+			// Call the next handler
+			next.ServeHTTP(w, r)
+
+			// Log the duration
+			accessLog.Printf("Path=%s Duration=%v", r.URL.Path, time.Since(start))
+		})
+	})
+
 	// Security headers middleware
 	router.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +312,11 @@ func main() {
 		})
 	})
 
-	log.Printf("Starting SECURE server on port %s", port)
-	log.Printf("SSRF protection enabled - metadata endpoints blocked")
-	log.Fatal(http.ListenAndServe(":"+port, router))
+	appLog.Printf("Starting SECURE server on port %s", port)
+	appLog.Printf("SSRF protection enabled - metadata endpoints blocked")
+	appLog.Printf("All access attempts and security events will be logged to CloudWatch")
+
+	if err := http.ListenAndServe(":"+port, router); err != nil {
+		appLog.Fatalf("Server failed to start: %v", err)
+	}
 }
