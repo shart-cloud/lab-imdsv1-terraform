@@ -106,12 +106,47 @@ curl http://<WEB_SERVER_PUBLIC_IP>:8080/api/products
 # Result: Successfully returns products (works from within VPC)
 ```
 
+## Security Monitoring
+
+### CloudWatch Logs
+Monitor attack attempts and VPC conditional blocks:
+```bash
+# View SSRF attempts
+aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --filter-pattern "CRITICAL"
+
+# View access logs
+aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --stream-name-prefix access
+```
+
+### CloudTrail Audit
+Track credential theft and failed usage attempts:
+```bash
+# View IAM role assumptions (credential theft)
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRole \
+  --region us-east-1
+
+# View failed DynamoDB access (blocked by VPC condition)
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=Products \
+  --region us-east-1 \
+  | jq '.Events[] | select(.ErrorCode != null)'
+
+# Export all CloudTrail logs for analysis
+aws s3 sync s3://imdsv1-lab-cloudtrail-<ACCOUNT_ID> ./cloudtrail-logs/
+```
+
+### What Gets Logged
+- **CloudWatch**: Application logs, SSRF attempts, access patterns
+- **CloudTrail**: 
+  - Successful credential theft (AssumeRole events)
+  - Failed DynamoDB access from outside VPC (AccessDenied errors)
+  - Shows VPC condition enforcement working
+
 ## Next Steps
-Check out `branch-3-vpc-endpoint` for the most secure configuration:
-- Implements VPC endpoint for DynamoDB
-- Restricts DynamoDB access to VPC endpoint only
-- Adds IMDSv2 enforcement
-- Implements SSRF protection
+Check out the other branches to see progressive security improvements:
+- `branch-2-vpc-conditional`: Adds VPC endpoint conditions to IAM policies
+- `branch-3-vpc-endpoint`: Implements VPC endpoints with restricted access
 
 ## Key Takeaways
 - VPC conditions provide network-based access control
