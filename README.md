@@ -1,4 +1,21 @@
-# IMDSv1 Security Lab - Branch: vpc-endpoint (SECURE)
+# IMDSv1 Security Lab - Branch: network-segmentation (ENTERPRISE)
+
+## 💰 AWS Cost Estimate (us-east-1)
+
+**Monthly Cost: $41.02** *(17% savings vs. branch-1)*
+
+| Resource | Monthly Cost | Notes |
+|----------|-------------|-------|
+| EC2 Instances (3x t3.micro) | $22.77 | Bastion + Web + Backend API |
+| RDS PostgreSQL (db.t3.micro) | $15.44 | Multi-AZ database |
+| EBS Storage (24 GB) | $2.40 | Root volumes |
+| Secrets Manager | $0.40 | Database credentials |
+| CloudTrail, CloudWatch, DynamoDB | Variable | Usage-based pricing |
+| ✅ **Enterprise Features** | **+$24.24** | **Database tier + API backend** |
+
+*Generated with Infracost on $(date '+%Y-%m-%d')*
+
+---
 
 ## Overview
 This branch demonstrates the **MOST SECURE** configuration with multiple layers of defense against IMDS credential theft and abuse.
