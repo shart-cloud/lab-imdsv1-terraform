@@ -1,22 +1,30 @@
-# IMDSv1 Security Lab - Branch: vpc-conditional
+# IMDSv1 Security Lab - Branch: vpc-endpoint (SECURE)
 
 ## Overview
-This branch demonstrates **PARTIAL MITIGATION** using VPC conditions in IAM policies. While credentials can still be stolen via SSRF, they can only be used from within the VPC.
+This branch demonstrates the **MOST SECURE** configuration with multiple layers of defense against IMDS credential theft and abuse.
 
-⚠️ **PARTIALLY VULNERABLE**: Credentials can still be stolen but have limited usability outside the VPC.
+✅ **FULLY PROTECTED**: Multiple security controls prevent credential theft and misuse.
 
-## Current Security Posture (PARTIAL MITIGATION)
-- ✗ IMDSv1 still enabled (credentials can be stolen)
-- ✗ SSRF vulnerability still exists
-- ✅ **NEW: VPC condition on IAM policy** (credentials only work from VPC)
-- ✅ **NEW: Resource-specific permissions** (not wildcard)
-- ✗ DynamoDB still accessible via internet (not using VPC endpoint)
+## Current Security Posture (FULLY SECURE)
+- ✅ **IMDSv2 enforced** (requires session token, prevents simple SSRF)
+- ✅ **SSRF protection implemented** (blocks metadata and private IPs)
+- ✅ **VPC Endpoint for DynamoDB** (traffic stays within AWS network)
+- ✅ **VPC Endpoint condition in IAM** (credentials only work via endpoint)
+- ✅ **Least privilege IAM** (specific resources and actions)
+- ✅ **Encryption at rest** (DynamoDB table encrypted)
+- ✅ **Security headers** (XSS, clickjacking protection)
 
-## What Changed from Branch 1
+## What Changed from Branch 2
 ```diff
-IAM Policy Improvements:
-+ Added VPC condition: "aws:SourceVpc": "vpc-xxx"
-+ Changed resource from "*" to specific DynamoDB table ARN
+Security Improvements:
++ IMDSv2 enforced (http_tokens = "required")
++ SSRF protection in application code
++ VPC Endpoint for DynamoDB
++ VPC Endpoint condition in IAM policy
++ IP blocking for metadata/private ranges
++ Security headers middleware
++ DynamoDB encryption enabled
++ Input validation and sanitization
 ```
 
 ## Lab Architecture
@@ -24,97 +32,156 @@ IAM Policy Improvements:
 Internet 
     |
     ├── Bastion Host (Public Subnet)
-    │   ├── Attack Tools
-    │   └── ❌ Stolen creds DON'T work from here (outside VPC)
+    │   ├── ❌ Cannot steal credentials (IMDSv2 + SSRF protection)
+    │   └── ❌ Cannot use stolen credentials (VPC Endpoint required)
     |
     └── Web Server (Public Subnet) 
-        ├── Still Vulnerable to SSRF
-        ├── ✅ Creds work from here (inside VPC)
-        └── IAM Role with VPC-restricted DynamoDB Access
+        ├── ✅ SSRF Protection (blocks metadata IPs)
+        ├── ✅ IMDSv2 Only (token required)
+        ├── ✅ VPC Endpoint Access Only
+        └── ✅ Encrypted DynamoDB via VPC Endpoint
+
+VPC Endpoint (Gateway)
+    └── DynamoDB (AWS Service)
 ```
 
-## Attack Scenario
+## Security Test Scenarios
 
 ### Prerequisites
-Same as Branch 1 - deploy infrastructure with Terraform.
+Deploy the infrastructure:
+```bash
+cd terraform
+terraform init
+terraform apply
+```
 
-### Attack Demonstration
-
-#### Step 1: Credentials Can Still Be Stolen
+### Test 1: SSRF Protection
 ```bash
 # Connect to bastion
 ssh -i imdsv1-lab.pem ec2-user@<BASTION_PUBLIC_IP>
 
-# SSRF still works to steal credentials
-curl "http://<WEB_SERVER_PRIVATE_IP>:8080/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+# Run security test
+./test-security.sh http://<WEB_SERVER_PRIVATE_IP>:8080
 
-# Get full credentials
-ROLE_NAME=imdsv1-lab-web-server-role
-curl "http://<WEB_SERVER_PRIVATE_IP>:8080/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE_NAME"
+# Results:
+# ✗ Metadata endpoint blocked (403 Forbidden)
+# ✗ Localhost access blocked (403 Forbidden)  
+# ✗ Private network access blocked (403 Forbidden)
+# ✓ External URLs allowed (200 OK)
+# ✓ API endpoints work normally
 ```
 
-#### Step 2: But Credentials Don't Work Outside VPC
+### Test 2: IMDSv2 Protection
+Even if SSRF protection failed, IMDSv2 prevents credential theft:
 ```bash
-# Run the attack script
-./steal-creds.sh http://<WEB_SERVER_PRIVATE_IP>:8080
+# Old IMDSv1 method (FAILS)
+curl http://169.254.169.254/latest/meta-data/
+# Result: 401 Unauthorized
 
-# Output will show:
-# ✅ Credentials successfully stolen
-# ❌ Access DENIED when trying to use them from bastion
-# Error: "Request must originate from the specified VPC"
+# IMDSv2 requires token first
+TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/
+# This works, but SSRF can't perform PUT request for token
 ```
 
-#### Step 3: Credentials WOULD Work Inside VPC
-If an attacker compromised another instance within the VPC, the stolen credentials would still work:
-
+### Test 3: VPC Endpoint Enforcement
+Even if credentials were somehow stolen:
 ```bash
-# From web server itself (or any instance in the VPC)
-export AWS_ACCESS_KEY_ID=<stolen_key>
-export AWS_SECRET_ACCESS_KEY=<stolen_secret>
-export AWS_SESSION_TOKEN=<stolen_token>
+# Stolen credentials wouldn't work from internet
+export AWS_ACCESS_KEY_ID=<any_stolen_key>
+export AWS_SECRET_ACCESS_KEY=<any_stolen_secret>
+export AWS_SESSION_TOKEN=<any_stolen_token>
 
-# This WOULD work from within VPC
+# This would fail - requires VPC endpoint
 aws dynamodb scan --table-name Products --region us-east-1
+# Error: Access denied - must use VPC endpoint
 ```
 
-## Why This Partial Mitigation Works
-1. **VPC Condition**: IAM policy includes `"aws:SourceVpc"` condition
-2. **Network Boundary**: AWS enforces that API calls must originate from specified VPC
-3. **Defense in Depth**: Even if credentials are stolen, usage is geographically limited
-
-## Remaining Vulnerabilities
-1. **IMDSv1 Still Active**: Credentials can still be stolen via SSRF
-2. **SSRF Not Fixed**: Application still vulnerable to SSRF attacks
-3. **Lateral Movement**: Attacker with VPC access can still use credentials
-4. **No VPC Endpoint**: DynamoDB traffic still goes over internet
-
-## Security Improvements in This Branch
-✅ **VPC Condition**: Limits credential usage to VPC  
-✅ **Resource-Specific Permissions**: No more wildcard resources  
-✅ **Network Segmentation**: Creates a network boundary for credential usage
-
-## Testing the Mitigation
+### Test 4: Legitimate Access Still Works
 ```bash
-# Test 1: From Outside VPC (Fails)
-aws dynamodb scan --table-name Products \
-  --region us-east-1 \
-  --endpoint-url https://dynamodb.us-east-1.amazonaws.com
-# Result: Access Denied
-
-# Test 2: Legitimate Access Still Works
+# The application continues to function normally
 curl http://<WEB_SERVER_PUBLIC_IP>:8080/api/products
-# Result: Successfully returns products (works from within VPC)
+# Returns product list successfully
+
+curl http://<WEB_SERVER_PUBLIC_IP>:8080/api/products/1
+# Returns specific product
+
+# DynamoDB access works because:
+# 1. Request originates from EC2 in VPC
+# 2. Uses VPC endpoint for DynamoDB
+# 3. IAM policy allows VPC endpoint access
 ```
 
-## Next Steps
-Check out `branch-3-vpc-endpoint` for the most secure configuration:
-- Implements VPC endpoint for DynamoDB
-- Restricts DynamoDB access to VPC endpoint only
-- Adds IMDSv2 enforcement
-- Implements SSRF protection
+## Security Controls Deep Dive
 
-## Key Takeaways
-- VPC conditions provide network-based access control
-- This is defense in depth - not a complete solution
-- Credentials can still be stolen but have limited blast radius
-- Must be combined with other controls for full protection
+### 1. SSRF Protection (Application Layer)
+```go
+// Blocks these IP ranges:
+- 169.254.0.0/16    // AWS metadata
+- 10.0.0.0/8        // Private network
+- 172.16.0.0/12     // Private network
+- 192.168.0.0/16    // Private network
+- 127.0.0.0/8       // Localhost
+```
+
+### 2. IMDSv2 Enforcement (EC2 Configuration)
+```hcl
+metadata_options {
+  http_tokens = "required"  // Must have session token
+  http_put_response_hop_limit = 1  // Prevents container escapes
+}
+```
+
+### 3. VPC Endpoint (Network Layer)
+```hcl
+# DynamoDB traffic never leaves AWS network
+# Endpoint policy restricts access to specific role
+# Route table directs DynamoDB traffic to endpoint
+```
+
+### 4. IAM Policy (Authorization Layer)
+```json
+{
+  "Condition": {
+    "StringEquals": {
+      "aws:SourceVpce": "vpce-xxxxx"  // Must use VPC endpoint
+    }
+  }
+}
+```
+
+## Attack Surface Analysis
+
+| Attack Vector | Branch 1 (Vulnerable) | Branch 2 (VPC Conditional) | Branch 3 (Secure) |
+|--------------|----------------------|---------------------------|-------------------|
+| SSRF to IMDS | ✗ Vulnerable | ✗ Vulnerable | ✅ Blocked |
+| Credential Theft | ✗ Easy | ✗ Easy | ✅ Prevented |
+| Use Stolen Creds | ✗ Works anywhere | ⚠️ VPC only | ✅ VPC Endpoint only |
+| Lateral Movement | ✗ Possible | ⚠️ Limited | ✅ Highly restricted |
+| Network Traffic | ✗ Internet | ✗ Internet | ✅ VPC Endpoint |
+
+## Best Practices Implemented
+1. **Defense in Depth**: Multiple layers of security
+2. **Least Privilege**: Minimal required permissions
+3. **Network Segmentation**: VPC endpoints isolate traffic
+4. **Input Validation**: SSRF protection validates all URLs
+5. **Encryption**: Data encrypted at rest and in transit
+6. **Monitoring Ready**: CloudTrail can audit VPC endpoint usage
+
+## Cleanup
+```bash
+terraform destroy
+```
+
+## Lessons Learned
+- **IMDSv2 is essential**: Always require session tokens
+- **Application security matters**: Fix SSRF vulnerabilities
+- **Network boundaries help**: VPC endpoints provide isolation
+- **IAM conditions add defense**: Restrict credential usage context
+- **Layer your security**: No single control is perfect
+
+## Additional Resources
+- [AWS IMDSv2 Documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html)
+- [VPC Endpoints for DynamoDB](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-ddb.html)
+- [IAM Policy Conditions](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html)
+- [OWASP SSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
