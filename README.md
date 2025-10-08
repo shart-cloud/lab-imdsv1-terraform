@@ -168,6 +168,46 @@ metadata_options {
 5. **Encryption**: Data encrypted at rest and in transit
 6. **Monitoring Ready**: CloudTrail can audit VPC endpoint usage
 
+## Security Monitoring
+
+### CloudWatch Logs
+Monitor security controls in action:
+```bash
+# View blocked SSRF attempts
+aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --filter-pattern "BLOCKED"
+
+# View all security events
+aws logs tail /aws/ec2/imdsv1-lab/web-server --follow --stream-name-prefix ssrf
+```
+
+### CloudTrail Audit
+Complete audit trail showing all protections working:
+```bash
+# Verify no credential theft occurs (no AssumeRole from attacker)
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRole \
+  --region us-east-1
+
+# Verify DynamoDB only accessed via VPC endpoint
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=Products \
+  --region us-east-1 \
+  | jq '.Events[] | {time: .EventTime, source: .SourceIPAddress, vpce: .RequestParameters.vpcEndpointId}'
+
+# Export all CloudTrail logs for compliance audit
+aws s3 sync s3://imdsv1-lab-cloudtrail-<ACCOUNT_ID> ./cloudtrail-logs/
+```
+
+### What Gets Logged
+- **CloudWatch**: 
+  - All SSRF attempts blocked by IP filtering
+  - Application access patterns
+  - Security control enforcement
+- **CloudTrail**: 
+  - No unauthorized AssumeRole events (IMDSv2 + SSRF protection)
+  - All DynamoDB access via VPC endpoint only
+  - Complete audit trail for compliance
+
 ## Cleanup
 ```bash
 terraform destroy

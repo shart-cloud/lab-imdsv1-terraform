@@ -273,6 +273,8 @@ resource "aws_iam_role_policy" "web_server_dynamodb" {
         Action = [
           "dynamodb:GetItem",
           "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
           "dynamodb:Scan",
           "dynamodb:Query",
           "dynamodb:DescribeTable"
@@ -373,6 +375,225 @@ resource "aws_dynamodb_table_item" "product3" {
     "Description" = { "S" = "Enterprise secret management solution" }
     "Price"       = { "S" = "299.99" }
   })
+}
+
+# S3 Bucket for CloudTrail logs
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket        = "imdsv1-lab-cloudtrail-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+
+  tags = {
+    Name = "imdsv1-lab-cloudtrail-logs"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSCloudTrailAclCheck"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:GetBucketAcl"
+        Resource = aws_s3_bucket.cloudtrail.arn
+      },
+      {
+        Sid    = "AWSCloudTrailWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.cloudtrail.arn}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# CloudWatch Log Group for CloudTrail
+resource "aws_cloudwatch_log_group" "cloudtrail" {
+  name              = "/aws/cloudtrail/imdsv1-lab"
+  retention_in_days = 7
+
+  tags = {
+    Name = "imdsv1-lab-cloudtrail-logs"
+  }
+}
+
+# IAM Role for CloudTrail
+resource "aws_iam_role" "cloudtrail" {
+  name = "imdsv1-lab-cloudtrail-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "imdsv1-lab-cloudtrail-role"
+  }
+}
+
+resource "aws_iam_role_policy" "cloudtrail" {
+  name = "cloudtrail-cloudwatch-policy"
+  role = aws_iam_role.cloudtrail.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+      }
+    ]
+  })
+}
+
+# CloudTrail Configuration
+resource "aws_cloudtrail" "main" {
+  name                          = "imdsv1-lab-trail"
+  s3_bucket_name               = aws_s3_bucket.cloudtrail.id
+  cloud_watch_logs_group_arn   = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+  cloud_watch_logs_role_arn    = aws_iam_role.cloudtrail.arn
+  enable_logging               = true
+  include_global_service_events = true
+  is_multi_region_trail        = false
+  enable_log_file_validation   = true
+
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    # Capture all S3 object operations
+    data_resource {
+      type   = "AWS::S3::Object"
+      values = ["arn:aws:s3:::*/*"]
+    }
+
+    # Capture DynamoDB operations
+    data_resource {
+      type   = "AWS::DynamoDB::Table"
+      values = [aws_dynamodb_table.products.arn]
+    }
+  }
+
+  # Focus on IAM and STS events for credential usage
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+  }
+
+  # Advanced event selectors for specific monitoring
+  advanced_event_selector {
+    name = "Monitor IAM Role Usage"
+
+    field_selector {
+      field  = "eventCategory"
+      equals = ["Management"]
+    }
+
+    field_selector {
+      field = "resources.type"
+      equals = [
+        "AWS::IAM::Role",
+        "AWS::IAM::User",
+        "AWS::STS::AssumedRole"
+      ]
+    }
+  }
+
+  advanced_event_selector {
+    name = "Monitor DynamoDB Access"
+
+    field_selector {
+      field  = "eventCategory"
+      equals = ["Data"]
+    }
+
+    field_selector {
+      field  = "resources.type"
+      equals = ["AWS::DynamoDB::Table"]
+    }
+
+    field_selector {
+      field  = "resources.ARN"
+      equals = [aws_dynamodb_table.products.arn]
+    }
+  }
+
+  advanced_event_selector {
+    name = "Monitor EC2 Metadata Access"
+
+    field_selector {
+      field  = "eventName"
+      equals = [
+        "AssumeRole",
+        "AssumeRoleWithWebIdentity",
+        "GetSessionToken",
+        "GetFederationToken"
+      ]
+    }
+  }
+
+  insight_selector {
+    insight_type = "ApiCallRateInsight"
+  }
+
+  tags = {
+    Name        = "imdsv1-lab-trail"
+    Purpose     = "Security audit and credential usage monitoring"
+    Environment = "Lab"
+  }
+
+  depends_on = [aws_s3_bucket_policy.cloudtrail]
 }
 
 # EC2 Instances
@@ -698,4 +919,27 @@ output "vpc_id" {
 
 output "vpc_endpoint_id" {
   value = aws_vpc_endpoint.dynamodb.id
+}
+
+output "cloudtrail_s3_bucket" {
+  value = aws_s3_bucket.cloudtrail.id
+}
+
+output "cloudtrail_status" {
+  value = {
+    trail_name     = aws_cloudtrail.main.name
+    s3_bucket      = aws_s3_bucket.cloudtrail.id
+    cloudwatch_log_group = aws_cloudwatch_log_group.cloudtrail.name
+    is_logging     = aws_cloudtrail.main.enable_logging
+  }
+}
+
+output "analyze_cloudtrail_commands" {
+  value = {
+    view_iam_actions = "aws cloudtrail lookup-events --lookup-attributes AttributeKey=ResourceType,AttributeValue=AWS::IAM::Role --region ${var.region}"
+    view_assume_role = "aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRole --region ${var.region}"
+    view_dynamodb_access = "aws cloudtrail lookup-events --lookup-attributes AttributeKey=ResourceName,AttributeValue=${aws_dynamodb_table.products.name} --region ${var.region}"
+    export_to_s3 = "aws s3 sync s3://${aws_s3_bucket.cloudtrail.id} ./cloudtrail-logs/"
+    analyze_with_athena = "See https://docs.aws.amazon.com/athena/latest/ug/cloudtrail-logs.html"
+  }
 }
