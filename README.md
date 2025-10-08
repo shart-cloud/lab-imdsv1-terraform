@@ -1,5 +1,21 @@
 # IMDSv1 Security Lab - Branch: vpc-endpoint (SECURE)
 
+## 💰 AWS Cost Estimate (us-east-1)
+
+**Monthly Cost: $16.78** *(66% savings vs. branch-1)*
+
+| Resource | Monthly Cost | Notes |
+|----------|-------------|-------|
+| EC2 Instances (2x t3.micro) | $15.18 | Bastion + Web Server |
+| EBS Storage (16 GB) | $1.60 | Root volumes |
+| DynamoDB VPC Endpoint | $0.00 | Gateway endpoint - no charge |
+| CloudTrail, CloudWatch, DynamoDB | Variable | Usage-based pricing |
+| ✅ **Security + Cost** | **$0** | **VPC Endpoint adds security at no cost** |
+
+*Generated with Infracost on $(date '+%Y-%m-%d')*
+
+---
+
 ## Overview
 This branch demonstrates the **MOST SECURE** configuration with multiple layers of defense against IMDS credential theft and abuse.
 
