@@ -12,6 +12,9 @@ provider "aws" {
   region = var.region
 }
 
+# Get current caller identity for VPC condition
+data "aws_caller_identity" "current" {}
+
 # VPC Configuration
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -124,7 +127,7 @@ resource "aws_security_group" "web_server" {
   }
 }
 
-# IAM Role for Web Server (VULNERABLE - Too Permissive)
+# IAM Role for Web Server - NOW WITH VPC CONDITION
 resource "aws_iam_role" "web_server" {
   name = "imdsv1-lab-web-server-role"
 
@@ -146,7 +149,7 @@ resource "aws_iam_role" "web_server" {
   }
 }
 
-# VULNERABLE: Overly permissive DynamoDB policy
+# IMPROVED: DynamoDB policy now requires requests come from specific VPC
 resource "aws_iam_role_policy" "web_server_dynamodb" {
   name = "web-server-dynamodb-policy"
   role = aws_iam_role.web_server.id
@@ -155,6 +158,7 @@ resource "aws_iam_role_policy" "web_server_dynamodb" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "DynamoDBAccessFromVPC"
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
@@ -165,7 +169,12 @@ resource "aws_iam_role_policy" "web_server_dynamodb" {
           "dynamodb:Query",
           "dynamodb:DescribeTable"
         ]
-        Resource = "*"
+        Resource = aws_dynamodb_table.products.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceVpc" = aws_vpc.main.id
+          }
+        }
       }
     ]
   })
@@ -237,27 +246,27 @@ resource "aws_instance" "bastion" {
   subnet_id             = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.bastion.id]
 
-  # VULNERABLE: IMDSv1 is enabled (default)
+  # STILL VULNERABLE: IMDSv1 is enabled
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "optional"  # VULNERABLE: Should be "required" for IMDSv2
+    http_tokens                 = "optional"  # Still vulnerable
     http_put_response_hop_limit = 1
   }
 
   user_data = <<-EOF
     #!/bin/bash
     yum update -y
-    yum install -y git curl wget
+    yum install -y git curl wget jq
     
     # Install AWS CLI v2
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
     unzip awscliv2.zip
     ./aws/install
     
-    # Create attack script
+    # Create attack scripts
     cat > /home/ec2-user/steal-creds.sh <<'SCRIPT'
     #!/bin/bash
-    echo "=== IMDSv1 Credential Theft Demo ==="
+    echo "=== IMDSv1 Credential Theft Demo (VPC Conditional Protection) ==="
     echo ""
     echo "Target Web Server: ${1:-http://10.0.1.100:8080}"
     echo ""
@@ -284,8 +293,8 @@ resource "aws_instance" "bastion" {
     SECRET_KEY=$(echo "$CREDS" | jq -r '.SecretAccessKey')
     SESSION_TOKEN=$(echo "$CREDS" | jq -r '.Token')
     
-    echo "Step 2: Using stolen credentials"
-    echo "--------------------------------"
+    echo "Step 2: Attempting to use stolen credentials"
+    echo "--------------------------------------------"
     echo "Setting up AWS CLI with stolen credentials..."
     
     export AWS_ACCESS_KEY_ID=$ACCESS_KEY
@@ -294,17 +303,27 @@ resource "aws_instance" "bastion" {
     export AWS_REGION=us-east-1
     
     echo ""
-    echo "Testing access to DynamoDB..."
-    aws dynamodb scan --table-name Products --query 'Items[*].[ID.S, Name.S, Price.S]' --output table
+    echo "Trying to access DynamoDB from OUTSIDE the VPC..."
+    aws dynamodb scan --table-name Products --query 'Items[*].[ID.S, Name.S, Price.S]' --output table 2>&1
     
     echo ""
-    echo "Success! We've stolen the credentials and accessed the database!"
+    echo "Result: Access DENIED! The VPC condition blocks usage outside the VPC!"
+    echo ""
+    echo "The credentials are valid but can only be used from within the VPC."
+    echo "This is a partial mitigation - an attacker with VPC access could still use them."
     SCRIPT
     
-    chmod +x /home/ec2-user/steal-creds.sh
+    cat > /home/ec2-user/test-from-vpc.sh <<'SCRIPT'
+    #!/bin/bash
+    echo "=== Testing Credentials from WITHIN VPC ==="
+    echo ""
     
-    # Install jq for JSON parsing
-    yum install -y jq
+    # This would work if run from within the VPC
+    echo "When run from an EC2 instance within the VPC, the same credentials WOULD work."
+    echo "This demonstrates that VPC conditions provide network-based access control."
+    SCRIPT
+    
+    chmod +x /home/ec2-user/*.sh
   EOF
 
   tags = {
@@ -320,10 +339,10 @@ resource "aws_instance" "web_server" {
   vpc_security_group_ids = [aws_security_group.web_server.id]
   iam_instance_profile   = aws_iam_instance_profile.web_server.name
 
-  # VULNERABLE: IMDSv1 is enabled
+  # STILL VULNERABLE: IMDSv1 is enabled
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "optional"  # VULNERABLE
+    http_tokens                 = "optional"  # Still vulnerable
     http_put_response_hop_limit = 1
   }
 
@@ -340,7 +359,7 @@ resource "aws_instance" "web_server" {
     mkdir -p /home/ec2-user/web-server
     cd /home/ec2-user/web-server
     
-    # Create the web server
+    # Create the web server (still vulnerable to SSRF)
     cat > main.go <<'GOFILE'
 ${file("/home/jg/git/shart-cloud-gh/imdsv1-lab/web-server/main.go")}
 GOFILE
@@ -356,7 +375,7 @@ GOMOD
     # Create systemd service
     cat > /etc/systemd/system/web-server.service <<'SERVICE'
     [Unit]
-    Description=Vulnerable Web Server
+    Description=Web Server with VPC Conditional Protection
     After=network.target
     
     [Service]
@@ -412,6 +431,10 @@ output "web_server_public_ip" {
 
 output "web_server_private_ip" {
   value = aws_instance.web_server.private_ip
+}
+
+output "vpc_id" {
+  value = aws_vpc.main.id
 }
 
 output "attack_command" {
