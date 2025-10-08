@@ -1,4 +1,20 @@
-# IMDSv1 Security Lab - Branch: vpc-endpoint (SECURE)
+# IMDSv1 Security Lab - Branch: file-upload (SECURE + FILE FEATURES)
+
+## 💰 AWS Cost Estimate (us-east-1)
+
+**Monthly Cost: $16.78** *(66% savings vs. branch-1)*
+
+| Resource | Monthly Cost | Notes |
+|----------|-------------|-------|
+| EC2 Instances (2x t3.micro) | $15.18 | Bastion + Web Server |
+| EBS Storage (16 GB) | $1.60 | Root volumes |
+| File Upload Features | $0.00 | Built into existing infrastructure |
+| CloudTrail, CloudWatch, DynamoDB | Variable | Usage-based pricing |
+| ✅ **Enhanced Features** | **$0** | **File upload adds capability at no cost** |
+
+*Generated with Infracost on $(date '+%Y-%m-%d')*
+
+---
 
 ## Overview
 This branch demonstrates the **MOST SECURE** configuration with multiple layers of defense against IMDS credential theft and abuse.
