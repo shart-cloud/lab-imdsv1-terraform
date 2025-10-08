@@ -1,5 +1,20 @@
 # IMDSv1 Security Lab - Branch: vulnerable
 
+## 💰 AWS Cost Estimate (us-east-1)
+
+**Monthly Cost: $49.63**
+
+| Resource | Monthly Cost | Notes |
+|----------|-------------|-------|
+| EC2 Instances (2x t3.micro) | $15.18 | Bastion + Web Server |
+| NAT Gateway | $32.85 | High cost - removed in later branches |
+| EBS Storage (16 GB) | $1.60 | Root volumes |
+| CloudTrail, CloudWatch, DynamoDB | Variable | Usage-based pricing |
+
+*Generated with Infracost on $(date '+%Y-%m-%d')*
+
+---
+
 ## Overview
 This branch demonstrates a **VULNERABLE** configuration where EC2 Instance Metadata Service v1 (IMDSv1) can be exploited via Server-Side Request Forgery (SSRF) to steal IAM role credentials.
 
