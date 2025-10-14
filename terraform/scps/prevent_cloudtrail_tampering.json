@@ -1,0 +1,61 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PreventCloudTrailDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:DeleteTrail"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PreventCloudTrailDisabling",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:StopLogging"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PreventCloudTrailModification",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:UpdateTrail"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "aws:ResourceTag/Protected": "true"
+        }
+      }
+    },
+    {
+      "Sid": "PreventCloudTrailBucketDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "s3:DeleteBucket",
+        "s3:DeleteBucketPolicy"
+      ],
+      "Resource": "arn:aws:s3:::*cloudtrail*"
+    },
+    {
+      "Sid": "PreventCloudTrailLogDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::*cloudtrail*/*"
+    },
+    {
+      "Sid": "PreventCloudWatchLogGroupDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "logs:DeleteLogGroup",
+        "logs:DeleteLogStream"
+      ],
+      "Resource": "arn:aws:logs:*:*:log-group:/aws/cloudtrail/*"
+    }
+  ]
+}

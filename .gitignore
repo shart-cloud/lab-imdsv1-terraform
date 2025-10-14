@@ -4,7 +4,8 @@
 .terraform/
 .terraform.lock.hcl
 terraform.tfvars
-
+.infracost
+terraform/.infracost
 # Go
 *.exe
 *.exe~

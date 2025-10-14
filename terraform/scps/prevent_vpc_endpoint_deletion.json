@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PreventVPCEndpointDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:DeleteVpcEndpoints"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc-endpoint/*"
+    },
+    {
+      "Sid": "PreventVPCEndpointModification",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:ModifyVpcEndpoint"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc-endpoint/*",
+      "Condition": {
+        "StringLike": {
+          "ec2:ResourceTag/Protected": "true"
+        }
+      }
+    },
+    {
+      "Sid": "PreventVPCEndpointPolicyChanges",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:ModifyVpcEndpointPolicy"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc-endpoint/*"
+    }
+  ]
+}

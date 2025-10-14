@@ -1,0 +1,164 @@
+# Enhanced VPC Endpoint Policy for DynamoDB
+# This file contains the enhanced VPC endpoint configuration
+# To use this, comment out the policy block in main.tf's aws_vpc_endpoint.dynamodb
+# and instead reference this policy
+#
+# IMPORTANT: Administrator bypass configured
+# Administrators with Admin*/Administrator* role/user names or AWSReservedSSO admin roles can bypass restrictions
+
+# Enhanced VPC Endpoint Policy Document
+data "aws_iam_policy_document" "dynamodb_vpc_endpoint_enhanced" {
+  # Allow specific roles with conditions
+  statement {
+    sid    = "AllowOnlyAuthorizedRoles"
+    effect = "Allow"
+    principals {
+      type = "AWS"
+      identifiers = [
+        aws_iam_role.web_server.arn
+      ]
+    }
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:Scan"
+    ]
+    resources = [aws_dynamodb_table.products.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceVpc"
+      values   = [aws_vpc.main.id]
+    }
+
+    condition {
+      test     = "IpAddress"
+      variable = "aws:SourceIp"
+      values = [
+        aws_subnet.public.cidr_block,
+        aws_subnet.private.cidr_block
+      ]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["true"]
+    }
+  }
+
+  # Deny destructive actions at network level
+  statement {
+    sid    = "DenyDestructiveActions"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions = [
+      "dynamodb:DeleteTable",
+      "dynamodb:DeleteItem",
+      "dynamodb:BatchWriteItem",
+      "dynamodb:UpdateTable"
+    ]
+    resources = ["*"]
+
+    # Allow administrators to bypass this restriction
+    condition {
+      test     = "StringNotLike"
+      variable = "aws:PrincipalArn"
+      values = [
+        "arn:aws:iam::*:role/Admin*",
+        "arn:aws:iam::*:role/*Administrator*",
+        "arn:aws:iam::*:user/Admin*",
+        "arn:aws:iam::*:role/AWSReservedSSO_*Admin*"
+      ]
+    }
+  }
+
+  # Deny all access from outside allowed subnet ranges
+  statement {
+    sid    = "DenyAccessFromUnauthorizedSubnets"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions   = ["dynamodb:*"]
+    resources = ["*"]
+
+    condition {
+      test     = "NotIpAddress"
+      variable = "aws:SourceIp"
+      values = [
+        aws_subnet.public.cidr_block,
+        aws_subnet.private.cidr_block
+      ]
+    }
+
+    # Allow administrators to bypass IP restrictions
+    condition {
+      test     = "StringNotLike"
+      variable = "aws:PrincipalArn"
+      values = [
+        "arn:aws:iam::*:role/Admin*",
+        "arn:aws:iam::*:role/*Administrator*",
+        "arn:aws:iam::*:user/Admin*",
+        "arn:aws:iam::*:role/AWSReservedSSO_*Admin*"
+      ]
+    }
+  }
+
+  # Limit query/scan result size to prevent mass exfiltration
+  statement {
+    sid    = "LimitBatchOperations"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions = [
+      "dynamodb:BatchGetItem"
+    ]
+    resources = ["*"]
+
+    # Allow administrators to perform batch operations
+    condition {
+      test     = "StringNotLike"
+      variable = "aws:PrincipalArn"
+      values = [
+        "arn:aws:iam::*:role/Admin*",
+        "arn:aws:iam::*:role/*Administrator*",
+        "arn:aws:iam::*:user/Admin*",
+        "arn:aws:iam::*:role/AWSReservedSSO_*Admin*"
+      ]
+    }
+  }
+}
+
+# Optional: Create a new VPC endpoint with the enhanced policy
+# Uncomment this block to replace the existing endpoint
+# You'll need to remove or comment out the aws_vpc_endpoint.dynamodb resource in main.tf
+
+# resource "aws_vpc_endpoint" "dynamodb_enhanced" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.region}.dynamodb"
+#   vpc_endpoint_type = "Gateway"
+#   route_table_ids   = [aws_route_table.public.id]
+#
+#   policy = data.aws_iam_policy_document.dynamodb_vpc_endpoint_enhanced.json
+#
+#   tags = {
+#     Name = "imdsv1-lab-dynamodb-endpoint-enhanced"
+#   }
+# }
+
+# To apply this enhanced policy to the existing endpoint:
+# 1. Comment out lines 95-113 in main.tf (the policy block)
+# 2. Add this line after vpc_endpoint_type: policy = data.aws_iam_policy_document.dynamodb_vpc_endpoint_enhanced.json
+# 3. Run terraform apply
+
+output "vpc_endpoint_enhanced_policy_info" {
+  value = "Enhanced VPC endpoint policy defined. See vpc_endpoint_enhanced.tf for application instructions."
+}

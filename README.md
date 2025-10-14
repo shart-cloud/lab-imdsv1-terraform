@@ -29,6 +29,7 @@ This branch demonstrates the **MOST SECURE** configuration with multiple layers 
 - ✅ **Least privilege IAM** (specific resources and actions)
 - ✅ **Encryption at rest** (DynamoDB table encrypted)
 - ✅ **Security headers** (XSS, clickjacking protection)
+- 📦 **Optional Resource Control Policies (RCPs)** available for defense-in-depth
 
 ## What Changed from Branch 2
 ```diff
@@ -183,6 +184,72 @@ metadata_options {
 4. **Input Validation**: SSRF protection validates all URLs
 5. **Encryption**: Data encrypted at rest and in transit
 6. **Monitoring Ready**: CloudTrail can audit VPC endpoint usage
+
+## 🛡️ Optional: Resource Control Policies (RCPs)
+
+This branch includes **optional** Resource Control Policies (RCPs) that add an additional layer of defense-in-depth security. RCPs are **disabled by default** (`.disabled` extension) and are not required for the lab to function.
+
+### What are RCPs?
+
+Resource Control Policies are resource-based policies applied directly to AWS resources (like DynamoDB tables, S3 buckets, VPC endpoints) rather than to IAM identities. They provide security controls that work even if IAM credentials are compromised.
+
+### Available RCPs in `terraform/` Directory:
+
+1. **`dynamodb_resource_policy.tf.disabled`** - Table-level DynamoDB security
+   - Enforces VPC endpoint access
+   - Prevents destructive operations
+   - Blocks DeleteItem/BatchWriteItem
+
+2. **`s3_enhanced_policies.tf.disabled`** - Enhanced S3 bucket policies
+   - Immutable CloudTrail logs
+   - Encryption enforcement
+   - Access logging
+
+3. **`vpc_endpoint_enhanced.tf.disabled`** - Network-level DynamoDB controls
+   - IP-based restrictions
+   - Denies batch operations
+   - Anti-exfiltration controls
+
+4. **`iam_permission_boundaries.tf.disabled`** - Maximum permissions for EC2 roles
+   - Prevents privilege escalation
+   - Optional separate bounded role
+
+5. **`iam_enhanced_policies.tf.disabled`** - Enhanced IAM policies for EC2 roles
+   - Query/scan result limits
+   - IMDS downgrade prevention
+
+### 📖 Full Documentation
+
+See **[terraform/RCP-IMPLEMENTATION-GUIDE.md](terraform/RCP-IMPLEMENTATION-GUIDE.md)** for:
+- Detailed explanation of each RCP
+- How to enable/disable RCPs
+- Administrator bypass configuration
+- Testing procedures
+- FAQ and troubleshooting
+
+### Quick Enable (Optional):
+
+```bash
+cd terraform
+
+# Enable recommended RCPs for production-like security
+mv dynamodb_resource_policy.tf.disabled dynamodb_resource_policy.tf
+mv s3_enhanced_policies.tf.disabled s3_enhanced_policies.tf
+mv vpc_endpoint_enhanced.tf.disabled vpc_endpoint_enhanced.tf
+
+terraform apply
+```
+
+**Note:** All RCPs include administrator bypass patterns so `terraform destroy` works normally.
+
+### Why RCPs are Optional:
+
+- Core lab security (IMDSv2, SSRF protection, VPC endpoints) is already comprehensive
+- RCPs add complexity that may not be needed for learning the basics
+- Best suited for production environments or advanced security demonstrations
+- Require careful configuration of administrator bypass patterns
+
+---
 
 ## Security Monitoring
 

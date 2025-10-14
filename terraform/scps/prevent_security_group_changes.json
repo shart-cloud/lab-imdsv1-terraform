@@ -1,0 +1,70 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PreventSecurityGroupDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:DeleteSecurityGroup"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "ec2:ResourceTag/Protected": "true"
+        }
+      }
+    },
+    {
+      "Sid": "PreventOpenIngressRules",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Subnet": "0.0.0.0/0"
+        },
+        "StringNotEquals": {
+          "ec2:ResourceTag/AllowPublicAccess": "true"
+        }
+      }
+    },
+    {
+      "Sid": "PreventSSHFromInternet",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "NumericEquals": {
+          "ec2:FromPort": [
+            "22",
+            "3389"
+          ]
+        },
+        "StringEquals": {
+          "ec2:IpPermissionsAllowCidr": "0.0.0.0/0"
+        }
+      }
+    },
+    {
+      "Sid": "PreventModificationOfProtectedGroups",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "ec2:ResourceTag/Immutable": "true"
+        }
+      }
+    }
+  ]
+}

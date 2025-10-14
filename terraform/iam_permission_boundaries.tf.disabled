@@ -1,0 +1,260 @@
+# IAM Permission Boundaries
+# Permission boundaries set the maximum permissions that an IAM role can have,
+# regardless of the policies attached to it. This provides an additional
+# security control to prevent privilege escalation.
+#
+# IMPORTANT: This creates a SEPARATE bounded role (web_server_with_boundary).
+# Administrators are NOT affected - they don't have this boundary attached.
+# This boundary only limits the EC2 instance role if you opt-in to using it.
+
+# Permission boundary policy for EC2 instance roles
+resource "aws_iam_policy" "ec2_permission_boundary" {
+  name        = "imdsv1-lab-ec2-permission-boundary"
+  description = "Maximum permissions allowed for EC2 instance roles in the lab"
+  path        = "/"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowedAWSServices"
+        Effect = "Allow"
+        Action = [
+          # DynamoDB - read/write operations only
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:DescribeTable",
+
+          # CloudWatch Logs - monitoring only
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+          "logs:DescribeLogGroups",
+
+          # EC2 - describe operations only (read-only)
+          "ec2:DescribeInstances",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "RequireVPCEndpointForDynamoDB"
+        Effect = "Deny"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = "*"
+        Condition = {
+          StringNotEquals = {
+            "aws:SourceVpce" = aws_vpc_endpoint.dynamodb.id
+          }
+        }
+      },
+      {
+        Sid    = "DenyDangerousActions"
+        Effect = "Deny"
+        Action = [
+          # IAM - prevent privilege escalation
+          "iam:*",
+
+          # Organizations - prevent organizational changes
+          "organizations:*",
+
+          # Account management
+          "account:*",
+
+          # Prevent metadata service modifications
+          "ec2:ModifyInstanceMetadataOptions",
+          "ec2:ModifyInstanceAttribute",
+
+          # Prevent network security changes
+          "ec2:CreateVpcEndpoint",
+          "ec2:DeleteVpcEndpoint",
+          "ec2:ModifyVpcEndpoint",
+          "ec2:CreateSecurityGroup",
+          "ec2:DeleteSecurityGroup",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupEgress",
+
+          # Prevent destructive DynamoDB operations
+          "dynamodb:DeleteTable",
+          "dynamodb:UpdateTable",
+          "dynamodb:DeleteItem",
+          "dynamodb:BatchWriteItem",
+
+          # Prevent S3 bucket operations
+          "s3:DeleteBucket",
+          "s3:DeleteBucketPolicy",
+          "s3:PutBucketPolicy",
+
+          # Prevent CloudTrail tampering
+          "cloudtrail:DeleteTrail",
+          "cloudtrail:StopLogging",
+          "cloudtrail:UpdateTrail",
+
+          # Prevent KMS key operations
+          "kms:ScheduleKeyDeletion",
+          "kms:DisableKey",
+          "kms:DeleteAlias",
+
+          # Prevent Lambda execution (unless explicitly needed)
+          "lambda:*",
+
+          # Prevent STS role assumption (unless explicitly needed)
+          "sts:AssumeRole"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "RequireEncryptedTransport"
+        Effect = "Deny"
+        Action = [
+          "dynamodb:*",
+          "s3:*"
+        ]
+        Resource = "*"
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid    = "RestrictRegions"
+        Effect = "Deny"
+        Action = "*"
+        Resource = "*"
+        Condition = {
+          StringNotEquals = {
+            "aws:RequestedRegion" = [
+              var.region,
+              "us-east-1" # Allow us-east-1 for global services
+            ]
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "imdsv1-lab-permission-boundary"
+    Purpose     = "Maximum permissions for EC2 instance roles"
+    Environment = "lab"
+  }
+}
+
+# Apply permission boundary to web server role
+# Note: This modifies the existing role to add the permission boundary
+# You may need to destroy and recreate the role for this to take effect
+
+resource "aws_iam_role" "web_server_with_boundary" {
+  name                 = "imdsv1-lab-web-server-role-bounded"
+  permissions_boundary = aws_iam_policy.ec2_permission_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "imdsv1-lab-web-server-role-with-boundary"
+  }
+}
+
+# Attach the same DynamoDB policy to the bounded role
+resource "aws_iam_role_policy" "web_server_bounded_dynamodb" {
+  name = "web-server-dynamodb-policy-bounded"
+  role = aws_iam_role.web_server_with_boundary.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DynamoDBViaVPCEndpointOnly"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Scan",
+          "dynamodb:Query",
+          "dynamodb:DescribeTable"
+        ]
+        Resource = aws_dynamodb_table.products.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceVpce" = aws_vpc_endpoint.dynamodb.id
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Attach CloudWatch Logs policy to bounded role
+resource "aws_iam_role_policy" "web_server_bounded_logs" {
+  name = "web-server-cloudwatch-logs-bounded"
+  role = aws_iam_role.web_server_with_boundary.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = "${aws_cloudwatch_log_group.web_server.arn}:*"
+      }
+    ]
+  })
+}
+
+# Instance profile for bounded role
+resource "aws_iam_instance_profile" "web_server_bounded" {
+  name = "imdsv1-lab-web-server-bounded-profile"
+  role = aws_iam_role.web_server_with_boundary.name
+
+  tags = {
+    Name = "imdsv1-lab-web-server-bounded-profile"
+  }
+}
+
+# Output information about permission boundary
+output "permission_boundary_info" {
+  value = {
+    policy_arn    = aws_iam_policy.ec2_permission_boundary.arn
+    policy_name   = aws_iam_policy.ec2_permission_boundary.name
+    bounded_role  = aws_iam_role.web_server_with_boundary.name
+    profile_name  = aws_iam_instance_profile.web_server_bounded.name
+    instructions  = "To use the bounded role, update EC2 instance to use iam_instance_profile.web_server_bounded instead of iam_instance_profile.web_server"
+  }
+}
+
+# Note: To apply the permission boundary to the existing web_server role,
+# you would need to add this line to the aws_iam_role.web_server resource in main.tf:
+#   permissions_boundary = aws_iam_policy.ec2_permission_boundary.arn
+#
+# However, adding a permission boundary to an existing role may require recreation.
+# This file creates a separate bounded role (web_server_with_boundary) that you can
+# optionally switch to by updating the EC2 instance's IAM instance profile.

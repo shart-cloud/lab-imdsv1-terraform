@@ -1,0 +1,81 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnencryptedDynamoDBTables",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:UpdateTable"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "dynamodb:EncryptionType": [
+            "KMS",
+            "DEFAULT"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyDisablingDynamoDBEncryption",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:UpdateTable"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Bool": {
+          "dynamodb:EncryptionEnabled": "false"
+        }
+      }
+    },
+    {
+      "Sid": "DenyUnencryptedRDSInstances",
+      "Effect": "Deny",
+      "Action": [
+        "rds:CreateDBInstance",
+        "rds:CreateDBCluster"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Bool": {
+          "rds:StorageEncrypted": "false"
+        }
+      }
+    },
+    {
+      "Sid": "DenyUnencryptedEBSVolumes",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateVolume",
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*:*:volume/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "ec2:Encrypted": "false"
+        }
+      }
+    },
+    {
+      "Sid": "DenyUnencryptedS3Uploads",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": [
+            "AES256",
+            "aws:kms"
+          ]
+        }
+      }
+    }
+  ]
+}

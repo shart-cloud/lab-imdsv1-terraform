@@ -1,0 +1,304 @@
+# Enhanced IAM Policies with Granular Conditions
+# This file provides additional IAM policy enhancements beyond the base configuration
+#
+# IMPORTANT: These policies are designed for EC2 INSTANCE ROLES ONLY
+# They are attached to web_server and bastion roles, NOT to administrator users/roles
+# Administrators are not affected by the Deny statements in these policies
+
+# Enhanced DynamoDB policy for web server with additional conditions
+data "aws_iam_policy_document" "web_server_dynamodb_enhanced" {
+  # Primary DynamoDB access with multiple security conditions
+  statement {
+    sid    = "DynamoDBReadWriteViaVPCEndpoint"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:Scan"
+    ]
+    resources = [aws_dynamodb_table.products.arn]
+
+    # CONDITION 1: Must use VPC Endpoint
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceVpce"
+      values   = [aws_vpc_endpoint.dynamodb.id]
+    }
+
+    # CONDITION 2: Must be from the VPC
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceVpc"
+      values   = [aws_vpc.main.id]
+    }
+
+    # CONDITION 3: Must use encrypted transport
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["true"]
+    }
+
+    # CONDITION 4: Limit scan/query result size (anti-exfiltration)
+    condition {
+      test     = "NumericLessThanEquals"
+      variable = "dynamodb:Limit"
+      values   = ["100"] # Max 100 items per query/scan
+    }
+
+    # CONDITION 5: Restrict to allowed regions only
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.region]
+    }
+  }
+
+  # Explicitly deny destructive operations
+  statement {
+    sid    = "DenyDestructiveOperations"
+    effect = "Deny"
+    actions = [
+      "dynamodb:DeleteItem",
+      "dynamodb:BatchWriteItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteTable",
+      "dynamodb:UpdateTable"
+    ]
+    resources = ["*"]
+  }
+
+  # Deny access if not using DynamoDB service endpoint
+  statement {
+    sid    = "DenyPublicInternetAccess"
+    effect = "Deny"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:Scan"
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:SourceVpce"
+      values   = [aws_vpc_endpoint.dynamodb.id]
+    }
+  }
+
+  # Optional: Time-based access control (uncomment to enable)
+  # statement {
+  #   sid    = "DenyAccessOutsideBusinessHours"
+  #   effect = "Deny"
+  #   actions = ["dynamodb:*"]
+  #   resources = ["*"]
+  #
+  #   # Deny between 10 PM and 6 AM UTC
+  #   condition {
+  #     test     = "DateGreaterThan"
+  #     variable = "aws:CurrentTime"
+  #     values   = ["2024-01-01T22:00:00Z"]
+  #   }
+  #   condition {
+  #     test     = "DateLessThan"
+  #     variable = "aws:CurrentTime"
+  #     values   = ["2024-01-02T06:00:00Z"]
+  #   }
+  # }
+}
+
+# Enhanced CloudWatch Logs policy
+data "aws_iam_policy_document" "web_server_logs_enhanced" {
+  statement {
+    sid    = "CloudWatchLogsWrite"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams"
+    ]
+    resources = [
+      "${aws_cloudwatch_log_group.web_server.arn}:*"
+    ]
+
+    # Only allow from within the VPC
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceVpc"
+      values   = [aws_vpc.main.id]
+    }
+
+    # Require encrypted transport
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["true"]
+    }
+  }
+
+  # Deny modification of log retention and deletion
+  statement {
+    sid    = "DenyLogTampering"
+    effect = "Deny"
+    actions = [
+      "logs:DeleteLogGroup",
+      "logs:DeleteLogStream",
+      "logs:PutRetentionPolicy"
+    ]
+    resources = ["*"]
+  }
+}
+
+# Bastion host enhanced policy (read-only for security)
+data "aws_iam_policy_document" "bastion_enhanced" {
+  # Allow CloudWatch Logs only
+  statement {
+    sid    = "CloudWatchLogsOnly"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams"
+    ]
+    resources = [
+      "${aws_cloudwatch_log_group.bastion.arn}:*"
+    ]
+  }
+
+  # Allow read-only EC2 describe operations for troubleshooting
+  statement {
+    sid    = "ReadOnlyEC2Access"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeInstances",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeVpcs",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeNetworkInterfaces"
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.region]
+    }
+  }
+
+  # Explicitly deny all other AWS service access
+  statement {
+    sid    = "DenyOtherServices"
+    effect = "Deny"
+    not_actions = [
+      "logs:*",
+      "ec2:Describe*",
+      "sts:GetCallerIdentity"
+    ]
+    resources = ["*"]
+  }
+}
+
+# Session policy template for temporary credentials (if using STS)
+data "aws_iam_policy_document" "restrictive_session_policy" {
+  # Limit session duration
+  statement {
+    sid    = "LimitSessionDuration"
+    effect = "Deny"
+    actions = [
+      "sts:AssumeRole",
+      "sts:GetSessionToken"
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "NumericGreaterThan"
+      variable = "sts:DurationSeconds"
+      values   = ["3600"] # Max 1 hour
+    }
+  }
+
+  # Require MFA for sensitive operations (if applicable)
+  statement {
+    sid    = "RequireMFAForSensitiveOps"
+    effect = "Deny"
+    actions = [
+      "dynamodb:DeleteTable",
+      "dynamodb:UpdateTable",
+      "ec2:TerminateInstances",
+      "s3:DeleteBucket"
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "BoolIfExists"
+      variable = "aws:MultiFactorAuthPresent"
+      values   = ["false"]
+    }
+  }
+}
+
+# Policy to prevent IMDS downgrade attacks
+data "aws_iam_policy_document" "prevent_imds_downgrade" {
+  statement {
+    sid    = "DenyIMDSv1Enablement"
+    effect = "Deny"
+    actions = [
+      "ec2:ModifyInstanceMetadataOptions",
+      "ec2:ModifyInstanceAttribute"
+    ]
+    resources = ["*"]
+
+    # Deny if trying to set http_tokens to optional (IMDSv1)
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:MetadataHttpTokens"
+      values   = ["optional"]
+    }
+  }
+
+  statement {
+    sid    = "DenyMetadataHopLimitIncrease"
+    effect = "Deny"
+    actions = [
+      "ec2:ModifyInstanceMetadataOptions"
+    ]
+    resources = ["*"]
+
+    # Prevent increasing hop limit (container escape prevention)
+    condition {
+      test     = "NumericGreaterThan"
+      variable = "ec2:MetadataHttpPutResponseHopLimit"
+      values   = ["1"]
+    }
+  }
+}
+
+# Output enhanced policy information
+output "iam_enhanced_policies_info" {
+  value = {
+    dynamodb_enhanced_policy   = "data.aws_iam_policy_document.web_server_dynamodb_enhanced"
+    logs_enhanced_policy       = "data.aws_iam_policy_document.web_server_logs_enhanced"
+    bastion_enhanced_policy    = "data.aws_iam_policy_document.bastion_enhanced"
+    session_policy_template    = "data.aws_iam_policy_document.restrictive_session_policy"
+    imds_protection_policy     = "data.aws_iam_policy_document.prevent_imds_downgrade"
+    instructions               = "These policy documents can replace existing inline policies or be attached as managed policies"
+  }
+}
+
+# Optional: Create managed policies from the policy documents
+# Uncomment to create standalone managed policies
+
+# resource "aws_iam_policy" "web_server_dynamodb_enhanced_managed" {
+#   name        = "imdsv1-lab-web-server-dynamodb-enhanced"
+#   description = "Enhanced DynamoDB access policy with granular conditions"
+#   policy      = data.aws_iam_policy_document.web_server_dynamodb_enhanced.json
+# }
+#
+# resource "aws_iam_role_policy_attachment" "web_server_dynamodb_enhanced" {
+#   role       = aws_iam_role.web_server.name
+#   policy_arn = aws_iam_policy.web_server_dynamodb_enhanced_managed.arn
+# }

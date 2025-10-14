@@ -1,0 +1,307 @@
+# Enhanced S3 Bucket Policies
+# This file provides additional security controls for S3 buckets beyond the basic configuration
+#
+# IMPORTANT: Administrator bypass configured for object deletion
+# Administrators with Admin*/Administrator* role/user names, AWSReservedSSO admin roles, or root can bypass deletion restrictions
+
+# Enhanced S3 Bucket Policy for CloudTrail
+# To use this, replace the existing aws_s3_bucket_policy.cloudtrail in main.tf
+
+data "aws_iam_policy_document" "cloudtrail_bucket_enhanced" {
+  # Allow CloudTrail to check bucket ACL
+  statement {
+    sid    = "AWSCloudTrailAclCheck"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.cloudtrail.arn]
+  }
+
+  # Allow CloudTrail to write logs with encryption requirement
+  statement {
+    sid    = "AWSCloudTrailWrite"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.cloudtrail.arn}/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["true"]
+    }
+  }
+
+  # Deny unencrypted object uploads
+  statement {
+    sid    = "DenyUnencryptedObjectUploads"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.cloudtrail.arn}/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["AES256", "aws:kms"]
+    }
+  }
+
+  # Deny insecure (HTTP) transport
+  statement {
+    sid    = "DenyInsecureTransport"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions = ["s3:*"]
+    resources = [
+      aws_s3_bucket.cloudtrail.arn,
+      "${aws_s3_bucket.cloudtrail.arn}/*"
+    ]
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  # Deny public ACLs
+  statement {
+    sid    = "DenyPublicACLs"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions = [
+      "s3:PutObject",
+      "s3:PutObjectAcl"
+    ]
+    resources = [
+      aws_s3_bucket.cloudtrail.arn,
+      "${aws_s3_bucket.cloudtrail.arn}/*"
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values = [
+        "public-read",
+        "public-read-write",
+        "authenticated-read"
+      ]
+    }
+  }
+
+  # Restrict access to specific AWS organization (if using AWS Organizations)
+  # Uncomment if you have an AWS organization
+  # statement {
+  #   sid    = "RestrictToOrganization"
+  #   effect = "Allow"
+  #   principals {
+  #     type        = "AWS"
+  #     identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+  #   }
+  #   actions = [
+  #     "s3:GetObject",
+  #     "s3:ListBucket"
+  #   ]
+  #   resources = [
+  #     aws_s3_bucket.cloudtrail.arn,
+  #     "${aws_s3_bucket.cloudtrail.arn}/*"
+  #   ]
+  #
+  #   condition {
+  #     test     = "StringEquals"
+  #     variable = "aws:PrincipalOrgID"
+  #     values   = ["o-xxxxxxxxxx"] # Replace with your org ID
+  #   }
+  # }
+
+  # Deny deletion of objects (immutable logs)
+  statement {
+    sid    = "DenyObjectDeletion"
+    effect = "Deny"
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion"
+    ]
+    resources = ["${aws_s3_bucket.cloudtrail.arn}/*"]
+
+    # Exclude administrators from this restriction (allows cleanup/destroy)
+    condition {
+      test     = "StringNotLike"
+      variable = "aws:PrincipalArn"
+      values   = [
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/Admin*",
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/*Administrator*",
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/Admin*",
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/AWSReservedSSO_*Admin*",
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+      ]
+    }
+  }
+
+  # Require VPC endpoint for S3 access from VPC
+  # Uncomment if you create an S3 VPC endpoint
+  # statement {
+  #   sid    = "RequireVPCEndpoint"
+  #   effect = "Deny"
+  #   principals {
+  #     type        = "AWS"
+  #     identifiers = ["*"]
+  #   }
+  #   actions = ["s3:*"]
+  #   resources = [
+  #     aws_s3_bucket.cloudtrail.arn,
+  #     "${aws_s3_bucket.cloudtrail.arn}/*"
+  #   ]
+  #
+  #   condition {
+  #     test     = "StringNotEquals"
+  #     variable = "aws:SourceVpce"
+  #     values   = [aws_vpc_endpoint.s3.id] # If you create one
+  #   }
+  #
+  #   # Allow CloudTrail service
+  #   condition {
+  #     test     = "StringNotLike"
+  #     variable = "aws:PrincipalServiceName"
+  #     values   = ["cloudtrail.amazonaws.com"]
+  #   }
+  # }
+}
+
+# Optional: Replace existing bucket policy with enhanced version
+# To use this, comment out the aws_s3_bucket_policy.cloudtrail resource in main.tf
+# and uncomment the block below
+
+# resource "aws_s3_bucket_policy" "cloudtrail_enhanced" {
+#   bucket = aws_s3_bucket.cloudtrail.id
+#   policy = data.aws_iam_policy_document.cloudtrail_bucket_enhanced.json
+# }
+
+# Add S3 Object Lock for immutable audit logs (optional)
+# Note: This requires creating a new bucket with object lock enabled from the start
+# You cannot enable object lock on an existing bucket
+
+# resource "aws_s3_bucket_object_lock_configuration" "cloudtrail" {
+#   bucket = aws_s3_bucket.cloudtrail.id
+#
+#   rule {
+#     default_retention {
+#       mode = "GOVERNANCE" # or "COMPLIANCE" for stricter control
+#       days = 90           # Retain logs for 90 days minimum
+#     }
+#   }
+# }
+
+# Enable S3 bucket logging to track access to CloudTrail logs
+resource "aws_s3_bucket" "cloudtrail_access_logs" {
+  bucket        = "imdsv1-lab-cloudtrail-access-logs-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+
+  tags = {
+    Name    = "imdsv1-lab-cloudtrail-access-logs"
+    Purpose = "Audit access to CloudTrail logs bucket"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "cloudtrail_access_logs" {
+  bucket = aws_s3_bucket.cloudtrail_access_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail_access_logs" {
+  bucket = aws_s3_bucket.cloudtrail_access_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_access_logs" {
+  bucket = aws_s3_bucket.cloudtrail_access_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Enable logging on the main CloudTrail bucket
+resource "aws_s3_bucket_logging" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  target_bucket = aws_s3_bucket.cloudtrail_access_logs.id
+  target_prefix = "cloudtrail-bucket-access/"
+}
+
+# Add lifecycle policy to manage old logs
+resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    id     = "archive-old-logs"
+    status = "Enabled"
+
+    filter {}
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA" # Move to cheaper storage after 30 days
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER" # Archive after 90 days
+    }
+
+    expiration {
+      days = 365 # Delete after 1 year (adjust based on compliance needs)
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
+# Output S3 security information
+output "s3_enhanced_security_info" {
+  value = {
+    cloudtrail_bucket         = aws_s3_bucket.cloudtrail.id
+    access_logs_bucket        = aws_s3_bucket.cloudtrail_access_logs.id
+    enhanced_policy_available = "See data.aws_iam_policy_document.cloudtrail_bucket_enhanced"
+    versioning_enabled        = "true"
+    encryption_enabled        = "true"
+    lifecycle_configured      = "true"
+    access_logging_enabled    = "true"
+  }
+}

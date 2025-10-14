@@ -1,0 +1,107 @@
+# DynamoDB Table Resource-Based Policy
+# This provides table-level enforcement of security controls,
+# independent of IAM policies
+#
+# IMPORTANT: Administrator bypass is configured to allow cleanup/management
+# Administrators with AdministratorAccess, admin role names, or AWSReservedSSO admin roles can bypass restrictions
+
+resource "aws_dynamodb_resource_policy" "products_table_policy" {
+  resource_arn = aws_dynamodb_table.products.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnforceVPCEndpointAccessForEC2Roles"
+        Effect = "Deny"
+        Principal = {
+          AWS = aws_iam_role.web_server.arn
+        }
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Scan",
+          "dynamodb:Query",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = aws_dynamodb_table.products.arn
+        Condition = {
+          StringNotEquals = {
+            "aws:SourceVpce" = aws_vpc_endpoint.dynamodb.id
+          }
+          # Allow administrators to bypass this restriction
+          StringNotLike = {
+            "aws:PrincipalArn" = [
+              "arn:aws:iam::*:role/Admin*",
+              "arn:aws:iam::*:user/Admin*",
+              "arn:aws:iam::*:role/*Administrator*",
+              "arn:aws:iam::*:role/AWSReservedSSO_*Admin*"
+            ]
+          }
+        }
+      },
+      {
+        Sid    = "RestrictToAuthorizedRoles"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.web_server.arn
+        }
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Scan",
+          "dynamodb:Query"
+        ]
+        Resource = aws_dynamodb_table.products.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceVpce" = aws_vpc_endpoint.dynamodb.id
+            "aws:SourceVpc"  = aws_vpc.main.id
+          }
+          IpAddress = {
+            # Only from VPC CIDR
+            "aws:SourceIp" = [aws_vpc.main.cidr_block]
+          }
+          Bool = {
+            # Require encrypted transport
+            "aws:SecureTransport" = "true"
+          }
+        }
+      },
+      {
+        Sid    = "DenyEC2RoleDestructiveOperations"
+        Effect = "Deny"
+        Principal = {
+          AWS = aws_iam_role.web_server.arn
+        }
+        Action = [
+          "dynamodb:DeleteTable",
+          "dynamodb:UpdateTable"
+        ]
+        Resource = aws_dynamodb_table.products.arn
+        # No conditions needed - this only restricts the EC2 role, not administrators
+      },
+      {
+        Sid    = "PreventEC2RoleDeletes"
+        Effect = "Deny"
+        Principal = {
+          AWS = aws_iam_role.web_server.arn
+        }
+        Action = [
+          "dynamodb:DeleteItem",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = aws_dynamodb_table.products.arn
+        # No conditions needed - this only restricts the EC2 role, not administrators
+      }
+    ]
+  })
+}
+
+# Output the resource policy for verification
+output "dynamodb_resource_policy_applied" {
+  value = "DynamoDB resource policy applied to ${aws_dynamodb_table.products.name}"
+}
